@@ -13,6 +13,7 @@
 - `Sources/StatusPills/StatusPills.swift`
   - Shared status event schema and reducer for fixed pill state.
   - Includes `DevToolsStatusEventMapper` and `DevToolsPillCoordinator` for CDP-to-pill ingestion.
+  - Includes `StatusEventFileTailer` + `StatusEventFileIngestor` for JSONL status ingestion from wrapper output files.
 
 - `Sources/TerminalHost/TerminalHost.swift`
   - Terminal engine adapters and session manager.

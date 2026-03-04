@@ -19,6 +19,7 @@ This repository now contains the **Phase 1 foundation** of the plan:
 - Workspace manifest YAML schema + parser + validation
 - Workspace layout reducer and restore planner (`autoRun` always false)
 - Status event JSON-line codec + pill state machine
+  - file tailing ingestion (`StatusEventFileIngestor`) with partial-line and truncation handling
 - Browser orchestration services with Apple Events adapters
   - profile-aware chromium remote debugging port propagation
   - `about:blank` fallback when no browser URL is provided
@@ -57,6 +58,13 @@ swift build
 ## Run App
 
 ```bash
+swift run FlouiApp
+```
+
+To enable live pill updates from wrapper events, point both app and wrappers to the same JSONL file:
+
+```bash
+export FLOUI_STATUS_FILE="$HOME/Library/Application Support/Floui/status-events.jsonl"
 swift run FlouiApp
 ```
 

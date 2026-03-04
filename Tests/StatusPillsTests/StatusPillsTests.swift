@@ -198,3 +198,107 @@ func devToolsCoordinatorUpdatesStore() async throws {
     #expect(pill?.unreadAlerts == 1)
     #expect(pill?.severity == .warning)
 }
+
+@Test("Status event file ingestor handles appended lines and partial fragments")
+func statusEventFileIngestorPollLifecycle() async throws {
+    let fileURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        .appendingPathComponent("status.jsonl")
+    try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+    let codec = StatusEventCodec()
+    let ingestor = StatusEventFileIngestor(fileURL: fileURL)
+    let now = Date(timeIntervalSince1970: 1_700_002_000)
+
+    let started = try codec.encode(StatusEvent(
+        event: .taskStarted,
+        workspaceID: "default",
+        paneID: "pill-1",
+        taskID: "task-1",
+        source: "claude-code",
+        timestamp: now,
+        message: "started"
+    ))
+    try (started + "\n").write(to: fileURL, atomically: true, encoding: .utf8)
+
+    let firstSnapshot = try await ingestor.poll()
+    #expect(firstSnapshot.pillsByPaneID["pill-1"]?.message == "started")
+
+    let progress = try codec.encode(StatusEvent(
+        event: .taskProgress,
+        workspaceID: "default",
+        paneID: "pill-1",
+        taskID: "task-1",
+        source: "claude-code",
+        timestamp: now.addingTimeInterval(1),
+        message: "progress",
+        progress: 0.4
+    ))
+    let done = try codec.encode(StatusEvent(
+        event: .taskDone,
+        workspaceID: "default",
+        paneID: "pill-1",
+        taskID: "task-1",
+        source: "claude-code",
+        timestamp: now.addingTimeInterval(2),
+        message: "done"
+    ))
+
+    let handle = try FileHandle(forWritingTo: fileURL)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data((progress + "\n" + String(done.dropLast(8))).utf8))
+    try handle.close()
+
+    let secondSnapshot = try await ingestor.poll()
+    #expect(secondSnapshot.pillsByPaneID["pill-1"]?.message == "progress")
+    #expect(secondSnapshot.pillsByPaneID["pill-1"]?.isRunning == true)
+
+    let appendHandle = try FileHandle(forWritingTo: fileURL)
+    try appendHandle.seekToEnd()
+    try appendHandle.write(contentsOf: Data((String(done.suffix(8)) + "\n").utf8))
+    try appendHandle.close()
+
+    let thirdSnapshot = try await ingestor.poll()
+    #expect(thirdSnapshot.pillsByPaneID["pill-1"]?.message == "done")
+    #expect(thirdSnapshot.pillsByPaneID["pill-1"]?.isRunning == false)
+}
+
+@Test("Status event file ingestor ignores malformed lines and handles truncation")
+func statusEventFileIngestorMalformedAndTruncation() async throws {
+    let fileURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        .appendingPathComponent("status.jsonl")
+    try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+    let codec = StatusEventCodec()
+    let ingestor = StatusEventFileIngestor(fileURL: fileURL)
+
+    let started = try codec.encode(StatusEvent(
+        event: .taskStarted,
+        workspaceID: "default",
+        paneID: "pill-2",
+        taskID: "task-2",
+        source: "coder-cli",
+        timestamp: Date(timeIntervalSince1970: 1_700_003_000),
+        message: "boot"
+    ))
+
+    try ("not-json\n" + started + "\n").write(to: fileURL, atomically: true, encoding: .utf8)
+    let firstSnapshot = try await ingestor.poll()
+    #expect(firstSnapshot.pillsByPaneID["pill-2"]?.message == "boot")
+
+    let done = try codec.encode(StatusEvent(
+        event: .taskDone,
+        workspaceID: "default",
+        paneID: "pill-2",
+        taskID: "task-2",
+        source: "coder-cli",
+        timestamp: Date(timeIntervalSince1970: 1_700_003_010),
+        message: "finished"
+    ))
+    try (done + "\n").write(to: fileURL, atomically: true, encoding: .utf8)
+
+    let secondSnapshot = try await ingestor.poll()
+    #expect(secondSnapshot.pillsByPaneID["pill-2"]?.message == "finished")
+    #expect(secondSnapshot.pillsByPaneID["pill-2"]?.isRunning == false)
+}

@@ -69,10 +69,10 @@ public actor ExternalTerminalEngine: TerminalEngine {
         Task {
             do {
                 let status = try await self.runner.run(executable, arguments, environment: config.environment)
-                await self.emit(.processExited(status), for: sessionID)
+                self.emit(.processExited(status), for: sessionID)
             } catch {
-                await self.emit(.status("external-runner-error: \(error.localizedDescription)"), for: sessionID)
-                await self.emit(.processExited(1), for: sessionID)
+                self.emit(.status("external-runner-error: \(error.localizedDescription)"), for: sessionID)
+                self.emit(.processExited(1), for: sessionID)
             }
         }
 
@@ -90,7 +90,7 @@ public actor ExternalTerminalEngine: TerminalEngine {
             throw FlouiError.notFound("session \(sessionID.rawValue)")
         }
 
-        await emit(.status("input-ignored-external-engine"), for: sessionID)
+        emit(.status("input-ignored-external-engine"), for: sessionID)
     }
 
     public func resize(sessionID: TerminalSessionID, cols _: Int, rows _: Int) async throws {

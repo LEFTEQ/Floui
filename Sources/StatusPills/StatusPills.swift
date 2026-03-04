@@ -321,9 +321,9 @@ public actor DevToolsPillCoordinator {
         let key = binding.key
         watchers[key] = Task {
             for await event in stream {
-                await self.consume(event: event, binding: binding)
+                self.consume(event: event, binding: binding)
             }
-            await self.unbind(key: key)
+            self.unbind(key: key)
         }
     }
 
@@ -351,5 +351,93 @@ public actor DevToolsPillCoordinator {
     private func unbind(key: String) {
         watchers[key]?.cancel()
         watchers.removeValue(forKey: key)
+    }
+}
+
+public enum StatusEventFileIngestionError: Error, Equatable, Sendable {
+    case invalidUTF8
+}
+
+public actor StatusEventFileTailer {
+    private let fileURL: URL
+    private let fileManager: FileManager
+    private var byteOffset: UInt64 = 0
+    private var pendingFragment = ""
+
+    public init(fileURL: URL, fileManager: FileManager = .default) {
+        self.fileURL = fileURL
+        self.fileManager = fileManager
+    }
+
+    public func poll() throws -> [String] {
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            return []
+        }
+
+        let attributes = try fileManager.attributesOfItem(atPath: fileURL.path)
+        let fileSize = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+
+        if fileSize < byteOffset {
+            byteOffset = 0
+            pendingFragment = ""
+        }
+
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer {
+            try? handle.close()
+        }
+
+        try handle.seek(toOffset: byteOffset)
+        let data = try handle.readToEnd() ?? Data()
+        byteOffset += UInt64(data.count)
+
+        guard !data.isEmpty else {
+            return []
+        }
+
+        guard let chunk = String(data: data, encoding: .utf8) else {
+            throw StatusEventFileIngestionError.invalidUTF8
+        }
+
+        let merged = pendingFragment + chunk
+        let parts = merged.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        let completeLines: [String]
+        if merged.hasSuffix("\n") {
+            pendingFragment = ""
+            completeLines = parts
+        } else {
+            pendingFragment = parts.last ?? ""
+            completeLines = Array(parts.dropLast())
+        }
+
+        return completeLines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+}
+
+public actor StatusEventFileIngestor {
+    private let tailer: StatusEventFileTailer
+    private let codec = StatusEventCodec()
+    private var store: StatusPillStore
+
+    public init(fileURL: URL, initialStore: StatusPillStore = .init()) {
+        tailer = StatusEventFileTailer(fileURL: fileURL)
+        store = initialStore
+    }
+
+    public func poll() async throws -> StatusPillStore {
+        let lines = try await tailer.poll()
+        for line in lines {
+            if let event = try? codec.decode(line: line) {
+                store.apply(event)
+            }
+        }
+        return store
+    }
+
+    public func snapshot() -> StatusPillStore {
+        store
     }
 }

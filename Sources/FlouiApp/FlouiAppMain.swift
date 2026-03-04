@@ -13,9 +13,11 @@ struct FlouiAppMain: App {
     @State private var permissionState = PermissionOnboardingState()
     @State private var lastSessionMetadata = LastSessionMetadata()
     @State private var didBootstrapState = false
+    @State private var didStartStatusIngestion = false
 
     private let permissionController = PermissionOnboardingController(checker: MacPermissionChecker())
     private let workspaceStateStore = JSONWorkspaceStateStore()
+    private let statusFileIngestor = StatusEventFileIngestor(fileURL: Self.defaultStatusFileURL)
 
     var body: some Scene {
         WindowGroup("Floui") {
@@ -33,6 +35,14 @@ struct FlouiAppMain: App {
 
                 didBootstrapState = true
                 await bootstrap()
+            }
+            .task {
+                guard !didStartStatusIngestion else {
+                    return
+                }
+
+                didStartStatusIngestion = true
+                await runStatusIngestionLoop()
             }
             .onChange(of: layoutState) { _, updated in
                 guard didBootstrapState else {
@@ -89,6 +99,17 @@ struct FlouiAppMain: App {
         try? await workspaceStateStore.save(snapshot)
     }
 
+    private func runStatusIngestionLoop() async {
+        while !Task.isCancelled {
+            if let snapshot = try? await statusFileIngestor.poll() {
+                await MainActor.run {
+                    pillStore = snapshot
+                }
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
+
     private static var sampleManifest: WorkspaceManifest {
         WorkspaceManifest(
             id: "default",
@@ -128,6 +149,20 @@ struct FlouiAppMain: App {
                 FixedPillManifest(id: "pill-coder", title: "Coder CLI", source: "coder-cli"),
             ]
         )
+    }
+
+    private static var defaultStatusFileURL: URL {
+        if let configuredPath = ProcessInfo.processInfo.environment["FLOUI_STATUS_FILE"],
+           !configuredPath.isEmpty
+        {
+            return URL(fileURLWithPath: configuredPath)
+        }
+
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return support
+            .appendingPathComponent("Floui", isDirectory: true)
+            .appendingPathComponent("status-events.jsonl")
     }
 }
 
