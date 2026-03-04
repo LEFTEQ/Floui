@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_xcodebuild-common.sh"
+SCHEME="$(resolve_scheme)"
+
+echo "Running core tests on scheme: $SCHEME"
+run_tests "$SCHEME" \
+  -only-testing:FlouiCoreTests \
+  -only-testing:WorkspaceCoreTests \
+  -only-testing:StatusPillsTests \
+  -only-testing:PermissionsTests

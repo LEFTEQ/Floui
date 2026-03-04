@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_xcodebuild-common.sh"
+SCHEME="$(resolve_scheme)"
+
+if [[ "${FLOUI_REAL_E2E:-0}" != "1" ]]; then
+  echo "Skipping real E2E: set FLOUI_REAL_E2E=1 to run real Ghostty/browser checks"
+  exit 0
+fi
+
+echo "Running real E2E tests on scheme: $SCHEME"
+run_tests "$SCHEME" -only-testing:E2ERealTests

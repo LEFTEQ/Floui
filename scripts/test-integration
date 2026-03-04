@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_xcodebuild-common.sh"
+SCHEME="$(resolve_scheme)"
+
+echo "Running integration tests on scheme: $SCHEME"
+run_tests "$SCHEME" \
+  -only-testing:TerminalHostTests \
+  -only-testing:BrowserOrchestratorTests
