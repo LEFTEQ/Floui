@@ -1,7 +1,9 @@
+import BrowserOrchestrator
 import FlouiCore
 import Permissions
 import StatusPills
 import SwiftUI
+import TerminalHost
 import WorkspaceCore
 
 @main
@@ -173,6 +175,9 @@ struct AppShellView: View {
 
     let permissionController: PermissionOnboardingController
     private let permissionEvaluator = PermissionHealthEvaluator()
+    @StateObject private var terminalRuntime = TerminalRuntimeViewModel()
+    @State private var browserRecoveryIssue: BrowserRecoveryIssue?
+    @State private var isApplyingBrowserLayout = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -201,6 +206,17 @@ struct AppShellView: View {
                 .background(Color.orange.opacity(0.16))
             }
 
+            if let browserRecoveryIssue {
+                BrowserRecoveryBannerView(
+                    issue: browserRecoveryIssue,
+                    isRetrying: isApplyingBrowserLayout,
+                    onRetry: applyBrowserLayout,
+                    onDismiss: { self.browserRecoveryIssue = nil }
+                )
+                .padding(10)
+                .background(Color.red.opacity(0.14))
+            }
+
             NavigationSplitView {
                 workspaceSidebar
             } detail: {
@@ -211,6 +227,8 @@ struct AppShellView: View {
                 .background(.ultraThinMaterial)
             }
             .navigationSplitViewStyle(.balanced)
+
+            shortcutHandlers
         }
     }
 
@@ -232,9 +250,17 @@ struct AppShellView: View {
 
     private var fixedPillRail: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Fixed Pills")
-                .font(.headline)
-                .padding(.horizontal, 8)
+            HStack(spacing: 8) {
+                Text("Fixed Pills")
+                    .font(.headline)
+                    .padding(.horizontal, 8)
+                Spacer(minLength: 8)
+                Button(isApplyingBrowserLayout ? "Applying..." : "Apply Layout") {
+                    applyBrowserLayout()
+                }
+                .buttonStyle(.bordered)
+                .disabled(isApplyingBrowserLayout || activeWorkspace == nil)
+            }
 
             let pills = activeWorkspace?.fixedPills ?? []
             ForEach(pills, id: \.id) { pill in
@@ -254,7 +280,14 @@ struct AppShellView: View {
                 ForEach(activeWorkspace?.columns ?? [], id: \.id) { column in
                     VStack(spacing: 12) {
                         ForEach(column.windows, id: \.id) { window in
-                            MiniWindowCard(window: window)
+                            MiniWindowCard(
+                                workspaceID: currentWorkspaceID,
+                                window: window,
+                                terminalRuntime: terminalRuntime,
+                                onSelectTab: { windowID, tabID in
+                                    selectTab(windowID: windowID, tabID: tabID)
+                                }
+                            )
                         }
                     }
                     .frame(width: column.width ?? 420)
@@ -270,6 +303,72 @@ struct AppShellView: View {
             return nil
         }
         return layoutState.workspaces[id]
+    }
+
+    private var currentWorkspaceID: String {
+        layoutState.activeWorkspaceID ?? "default"
+    }
+
+    private var shortcutHandlers: some View {
+        VStack(spacing: 0) {
+            Button("Next Tab") {
+                cycleTab(direction: .next)
+            }
+            .keyboardShortcut("]", modifiers: [.command, .shift])
+
+            Button("Previous Tab") {
+                cycleTab(direction: .previous)
+            }
+            .keyboardShortcut("[", modifiers: [.command, .shift])
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0.001)
+    }
+
+    private func selectTab(windowID: String, tabID: String) {
+        WorkspaceLayoutReducer.reduce(state: &layoutState, action: .selectTab(windowID: windowID, tabID: tabID))
+    }
+
+    private func cycleTab(direction: WorkspaceTabCycleDirection) {
+        WorkspaceLayoutReducer.reduce(state: &layoutState, action: .cycleTab(direction: direction))
+    }
+
+    private func applyBrowserLayout() {
+        guard let workspace = activeWorkspace else {
+            return
+        }
+
+        isApplyingBrowserLayout = true
+        browserRecoveryIssue = nil
+
+        Task {
+            let appleEvents = CocoaAppleEventClient()
+            let adapters: [BrowserKind: BrowserAdapter] = [
+                .safari: AppleEventBrowserAdapter(kind: .safari, appleEvents: appleEvents),
+                .chrome: AppleEventBrowserAdapter(kind: .chrome, appleEvents: appleEvents),
+                .brave: AppleEventBrowserAdapter(kind: .brave, appleEvents: appleEvents),
+            ]
+
+            let orchestrator = BrowserWorkspaceOrchestrator(adapters: adapters)
+            let layout = BrowserLayoutBuilder.fromManifest(
+                workspace,
+                defaultBounds: FlouiRect(x: 80, y: 70, width: 1280, height: 860)
+            )
+
+            do {
+                try await orchestrator.apply(layout: layout)
+                await MainActor.run {
+                    isApplyingBrowserLayout = false
+                    browserRecoveryIssue = nil
+                }
+            } catch {
+                let issue = BrowserRecoveryAdvisor.advise(error: error)
+                await MainActor.run {
+                    isApplyingBrowserLayout = false
+                    browserRecoveryIssue = issue
+                }
+            }
+        }
     }
 }
 
@@ -324,8 +423,56 @@ struct PermissionBannerView: View {
     }
 }
 
+struct BrowserRecoveryBannerView: View {
+    let issue: BrowserRecoveryIssue
+    let isRetrying: Bool
+    let onRetry: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(issue.title)
+                    .font(.subheadline.bold())
+                Spacer(minLength: 8)
+                Button("Dismiss", action: onDismiss)
+                    .buttonStyle(.borderless)
+            }
+
+            Text(issue.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(issue.steps, id: \.self) { step in
+                Text("• \(step)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                Button(isRetrying ? "Retrying..." : "Retry Browser Layout") {
+                    onRetry()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isRetrying)
+            }
+        }
+    }
+}
+
 struct MiniWindowCard: View {
+    let workspaceID: String
     let window: WorkspaceMiniWindowManifest
+    @ObservedObject var terminalRuntime: TerminalRuntimeViewModel
+    let onSelectTab: (String, String) -> Void
+    @State private var terminalInput = ""
+
+    private var activeTab: WorkspaceTabManifest? {
+        if let activeTabID = window.activeTabID {
+            return window.tabs.first(where: { $0.id == activeTabID }) ?? window.tabs.first
+        }
+        return window.tabs.first
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -335,25 +482,225 @@ struct MiniWindowCard: View {
 
             HStack(spacing: 8) {
                 ForEach(window.tabs, id: \.id) { tab in
-                    Text(tab.title)
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(tab.id == window.activeTabID ? Color.blue.opacity(0.3) : Color.secondary.opacity(0.15))
-                        .clipShape(Capsule())
+                    Button {
+                        onSelectTab(window.id, tab.id)
+                    } label: {
+                        Text(tab.title)
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(tab.id == activeTab?.id ? Color.blue.opacity(0.3) : Color.secondary.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
 
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.white.opacity(0.05))
-                .frame(height: 180)
-                .overlay(alignment: .center) {
-                    Text("\(window.tabs.first?.type.rawValue.capitalized ?? "Pane") Surface")
-                        .foregroundStyle(.secondary)
+            Group {
+                if let tab = activeTab {
+                    switch tab.type {
+                    case .terminal:
+                        TerminalPaneView(
+                            tab: tab,
+                            workspaceID: workspaceID,
+                            snapshot: terminalRuntime.snapshotsByPaneID[tab.id],
+                            inputText: $terminalInput,
+                            onAppear: {
+                                terminalRuntime.activate(
+                                    tab: tab,
+                                    workspaceID: workspaceID,
+                                    surfaceID: "surface-\(window.id)-\(tab.id)"
+                                )
+                            },
+                            onSubmitInput: { value in
+                                terminalRuntime.sendInput(paneID: tab.id, input: value + "\n")
+                            }
+                        )
+
+                    case .browser:
+                        BrowserPaneView(tab: tab)
+
+                    case .pill:
+                        PillPaneView(tab: tab)
+                    }
+                } else {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.white.opacity(0.05))
+                        .frame(height: 180)
+                        .overlay(alignment: .center) {
+                            Text("Empty Window")
+                                .foregroundStyle(.secondary)
+                        }
                 }
+            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
+    }
+}
+
+struct TerminalPaneView: View {
+    let tab: WorkspaceTabManifest
+    let workspaceID: String
+    let snapshot: TerminalPaneRuntimeState?
+    @Binding var inputText: String
+    let onAppear: () -> Void
+    let onSubmitInput: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(snapshot?.isRunning == true ? "Running" : "Stopped")
+                    .font(.caption2.bold())
+                    .foregroundStyle(snapshot?.isRunning == true ? .green : .secondary)
+                Spacer(minLength: 8)
+                if let exitCode = snapshot?.exitCode {
+                    Text("exit \(exitCode)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(snapshot?.outputLines.suffix(120) ?? [], id: \.self) { line in
+                        Text(line)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if let lastMessage = snapshot?.lastMessage,
+                       !lastMessage.isEmpty
+                    {
+                        Text(lastMessage)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+            }
+            .frame(height: 140)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.35)))
+
+            TextField("Send input to \(tab.id)", text: $inputText)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .onSubmit {
+                    let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else {
+                        return
+                    }
+                    onSubmitInput(trimmed)
+                    inputText = ""
+                }
+        }
+        .onAppear(perform: onAppear)
+    }
+}
+
+struct BrowserPaneView: View {
+    let tab: WorkspaceTabManifest
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(Color.white.opacity(0.05))
+            .frame(height: 180)
+            .overlay(alignment: .center) {
+                VStack(spacing: 6) {
+                    Text("Browser Surface")
+                        .font(.caption.bold())
+                    Text(tab.url ?? "about:blank")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+    }
+}
+
+struct PillPaneView: View {
+    let tab: WorkspaceTabManifest
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(Color.white.opacity(0.05))
+            .frame(height: 180)
+            .overlay(alignment: .center) {
+                Text("Pill Pane: \(tab.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+    }
+}
+
+@MainActor
+final class TerminalRuntimeViewModel: ObservableObject {
+    @Published private(set) var snapshotsByPaneID: [String: TerminalPaneRuntimeState] = [:]
+
+    private let runtime = TerminalWorkspaceRuntime(engine: ExternalTerminalEngine())
+    private var activePaneIDs = Set<String>()
+    private var pollTask: Task<Void, Never>?
+
+    init() {
+        pollTask = Task { [weak self] in
+            await self?.pollLoop()
+        }
+    }
+
+    deinit {
+        pollTask?.cancel()
+    }
+
+    func activate(tab: WorkspaceTabManifest, workspaceID: String, surfaceID: String) {
+        guard tab.type == .terminal else {
+            return
+        }
+
+        activePaneIDs.insert(tab.id)
+        let command = (tab.command?.isEmpty == false) ? (tab.command ?? ["/bin/zsh"]) : ["/bin/zsh"]
+        let config = TerminalSessionConfig(
+            workspaceID: workspaceID,
+            paneID: tab.id,
+            shellCommand: command
+        )
+
+        Task { [runtime] in
+            do {
+                try await runtime.activateTerminal(config: config)
+                try? await runtime.attachSurface(paneID: tab.id, surfaceID: surfaceID)
+            } catch {
+                await MainActor.run {
+                    self.snapshotsByPaneID[tab.id] = TerminalPaneRuntimeState(
+                        paneID: tab.id,
+                        workspaceID: workspaceID,
+                        command: command,
+                        isRunning: false,
+                        lastMessage: "Terminal start failed: \(error.localizedDescription)",
+                        outputLines: []
+                    )
+                }
+            }
+        }
+    }
+
+    func sendInput(paneID: String, input: String) {
+        Task { [runtime] in
+            try? await runtime.sendInput(paneID: paneID, input: input)
+        }
+    }
+
+    private func pollLoop() async {
+        while !Task.isCancelled {
+            let paneIDs = activePaneIDs
+            for paneID in paneIDs {
+                if let snapshot = await runtime.snapshot(for: paneID) {
+                    snapshotsByPaneID[paneID] = snapshot
+                }
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
     }
 }
 

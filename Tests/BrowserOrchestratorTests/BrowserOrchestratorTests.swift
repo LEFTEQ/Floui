@@ -55,6 +55,26 @@ actor RecordingAppleEventClient: AppleEventClient {
     }
 }
 
+actor FailingBrowserAdapter: BrowserAdapter {
+    let kind: BrowserKind
+    let failure: Error
+
+    init(kind: BrowserKind, failure: Error) {
+        self.kind = kind
+        self.failure = failure
+    }
+
+    func launch(_: BrowserLaunchRequest) async throws {
+        throw failure
+    }
+
+    func listWindows() async throws -> [BrowserWindow] { [] }
+    func setWindowBounds(windowID _: BrowserWindowID, bounds _: FlouiRect) async throws {}
+    func listTabs(windowID _: BrowserWindowID) async throws -> [BrowserTab] { [] }
+    func focusTab(tabID _: BrowserTabID) async throws {}
+    func openDevTools(tabID _: BrowserTabID) async throws {}
+}
+
 actor RecordingCDPClient: CDPClient {
     var connectedHost: String?
     var connectedPort: Int?
@@ -262,6 +282,53 @@ func appleEventAdapterWindowAndTabParsing() async throws {
     #expect(scripts.count == 3)
     #expect(scripts[2].contains("id as string"))
     #expect(scripts[2].contains("\"w2\""))
+}
+
+@Test("Orchestrator wraps adapter AppleScript failures with browser context")
+func orchestratorWrapsAutomationFailures() async {
+    let failing = FailingBrowserAdapter(
+        kind: .chrome,
+        failure: BrowserAutomationError.appleScriptFailure(code: -1743, message: "Not authorized to send Apple events")
+    )
+    let orchestrator = BrowserWorkspaceOrchestrator(adapters: [.chrome: failing])
+    let layout = BrowserWorkspaceLayout(
+        workspaceID: "w1",
+        plans: [
+            BrowserWindowPlan(
+                browser: .chrome,
+                profileName: "floui-dev",
+                urls: ["https://example.com"],
+                bounds: FlouiRect(x: 0, y: 0, width: 1200, height: 900),
+                openDevToolsForFirstTab: true,
+                remoteDebuggingPort: 9222
+            )
+        ]
+    )
+
+    await #expect(throws: BrowserOrchestrationError(
+        browser: .chrome,
+        operation: "launch",
+        code: -1743,
+        message: "Not authorized to send Apple events"
+    )) {
+        try await orchestrator.apply(layout: layout)
+    }
+}
+
+@Test("Recovery advisor maps automation denial to actionable permissions steps")
+func recoveryAdvisorPermissionMapping() {
+    let issue = BrowserRecoveryAdvisor.advise(
+        error: BrowserOrchestrationError(
+            browser: .brave,
+            operation: "launch",
+            code: -1743,
+            message: "Not authorized to send Apple events"
+        )
+    )
+
+    #expect(issue.isPermissionIssue)
+    #expect(issue.summary.contains("denied Apple Events access"))
+    #expect(issue.steps.contains(where: { $0.contains("System Settings") }))
 }
 
 @Test("ChromiumDevToolsAdapter sends bootstrap commands")

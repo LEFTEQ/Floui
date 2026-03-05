@@ -4,7 +4,7 @@ Floui is a macOS 15+ Apple Silicon workspace orchestrator for terminal + browser
 
 ## Current State
 
-This repository now contains the **Phase 1 foundation** of the plan:
+This repository now contains a working iterative implementation of the architecture:
 
 - Native Swift modular architecture (Swift 6.2, macOS 15+)
 - SwiftUI app shell with:
@@ -18,13 +18,16 @@ This repository now contains the **Phase 1 foundation** of the plan:
   - harness interfaces (`Clock`, `ProcessRunner`, `SocketTransport`, `AppleEventClient`, `CDPClient`, `TerminalSurfaceBridge`)
 - Workspace manifest YAML schema + parser + validation
 - Workspace layout reducer and restore planner (`autoRun` always false)
+  - tab selection + next/previous tab cycling actions for keyboard shortcuts
 - Status event JSON-line codec + pill state machine
   - file tailing ingestion (`StatusEventFileIngestor`) with partial-line and truncation handling
 - Browser orchestration services with Apple Events adapters
   - profile-aware chromium remote debugging port propagation
   - `about:blank` fallback when no browser URL is provided
   - safer AppleScript generation for tab creation and bounds targeting by window ID
+  - recovery advisor and actionable permission/browser failure guidance
 - Ghostty abstraction + concrete runtime bridge (`GhosttyRuntimeBridge`) via dynamic `libghostty` C symbols
+- Terminal workspace runtime (`TerminalWorkspaceRuntime`) with pane lifecycle tracking for terminal tabs
 - Permission onboarding + health reporting (`PermissionOnboardingController`, `PermissionHealthEvaluator`)
 - CDP ingestion stack:
   - `ChromiumDevToolsAdapter` target cache + lifecycle stream handling
@@ -36,6 +39,12 @@ This repository now contains the **Phase 1 foundation** of the plan:
   - state is persisted on layout changes and non-active scene transitions
 - `floui-cli` wrapper that emits structured `task.started/task.done` JSON events
 - Local `xcodebuild` test scripts aligned to TDD flow
+
+## Interaction Notes
+
+- Tab shortcuts: `Cmd+Shift+]` for next tab, `Cmd+Shift+[` for previous tab.
+- Terminal tabs are now live runtime panes backed by `TerminalWorkspaceRuntime` (session state + input forwarding).
+- Browser orchestration can be triggered from the fixed-pill rail using `Apply Layout`; failures surface recovery steps in-app.
 
 ## Project Layout
 

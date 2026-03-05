@@ -2,6 +2,103 @@ import FlouiCore
 import Foundation
 import WorkspaceCore
 
+public enum BrowserAutomationError: Error, Equatable, Sendable {
+    case appleScriptFailure(code: Int, message: String)
+}
+
+public struct BrowserOrchestrationError: Error, Equatable, Sendable {
+    public var browser: BrowserKind
+    public var operation: String
+    public var code: Int?
+    public var message: String
+
+    public init(browser: BrowserKind, operation: String, code: Int?, message: String) {
+        self.browser = browser
+        self.operation = operation
+        self.code = code
+        self.message = message
+    }
+}
+
+public struct BrowserRecoveryIssue: Equatable, Sendable {
+    public var title: String
+    public var summary: String
+    public var steps: [String]
+    public var isPermissionIssue: Bool
+
+    public init(title: String, summary: String, steps: [String], isPermissionIssue: Bool) {
+        self.title = title
+        self.summary = summary
+        self.steps = steps
+        self.isPermissionIssue = isPermissionIssue
+    }
+}
+
+public enum BrowserRecoveryAdvisor {
+    public static func advise(error: Error) -> BrowserRecoveryIssue {
+        if let orchestrationError = error as? BrowserOrchestrationError {
+            if orchestrationError.code == -1743 {
+                return BrowserRecoveryIssue(
+                    title: "\(orchestrationError.browser.rawValue.capitalized) automation permission required",
+                    summary: "macOS denied Apple Events access while running \(orchestrationError.operation).",
+                    steps: [
+                        "Open System Settings > Privacy & Security > Automation.",
+                        "Enable control access for Floui to \(orchestrationError.browser.rawValue.capitalized).",
+                        "Retry the browser orchestration action.",
+                    ],
+                    isPermissionIssue: true
+                )
+            }
+
+            if orchestrationError.code == -600 {
+                return BrowserRecoveryIssue(
+                    title: "\(orchestrationError.browser.rawValue.capitalized) is not available",
+                    summary: "The target browser process is not running or did not respond to Apple Events.",
+                    steps: [
+                        "Start \(orchestrationError.browser.rawValue.capitalized) manually once.",
+                        "Verify the app is installed in /Applications.",
+                        "Retry browser orchestration.",
+                    ],
+                    isPermissionIssue: false
+                )
+            }
+
+            return BrowserRecoveryIssue(
+                title: "Browser orchestration failed",
+                summary: orchestrationError.message,
+                steps: [
+                    "Confirm browser permissions in System Settings > Privacy & Security > Automation.",
+                    "Check browser installation and try relaunching the browser.",
+                    "Retry the operation from Floui.",
+                ],
+                isPermissionIssue: false
+            )
+        }
+
+        if let flouiError = error as? FlouiError {
+            return BrowserRecoveryIssue(
+                title: "Browser orchestration failed",
+                summary: String(describing: flouiError),
+                steps: [
+                    "Verify browser adapters are configured for Safari, Chrome, and Brave.",
+                    "Retry after relaunching Floui.",
+                ],
+                isPermissionIssue: false
+            )
+        }
+
+        return BrowserRecoveryIssue(
+            title: "Browser orchestration failed",
+            summary: error.localizedDescription,
+            steps: [
+                "Retry the operation.",
+                "If it repeats, check browser automation permissions in System Settings.",
+            ],
+            isPermissionIssue: false
+        )
+    }
+}
+
 public struct BrowserWindowPlan: Equatable, Sendable {
     public var browser: BrowserKind
     public var profileName: String
@@ -91,18 +188,58 @@ public actor BrowserWorkspaceOrchestrator {
                 enableRemoteDebugging: plan.browser != .safari,
                 remoteDebuggingPort: remoteDebuggingPort
             )
-            try await adapter.launch(launchRequest)
+            do {
+                try await adapter.launch(launchRequest)
+            } catch {
+                throw wrap(error: error, browser: plan.browser, operation: "launch")
+            }
 
-            let windows = try await adapter.listWindows()
+            let windows: [BrowserWindow]
+            do {
+                windows = try await adapter.listWindows()
+            } catch {
+                throw wrap(error: error, browser: plan.browser, operation: "listWindows")
+            }
+
             if let firstWindow = windows.first {
-                try await adapter.setWindowBounds(windowID: firstWindow.id, bounds: plan.bounds)
+                do {
+                    try await adapter.setWindowBounds(windowID: firstWindow.id, bounds: plan.bounds)
+                } catch {
+                    throw wrap(error: error, browser: plan.browser, operation: "setWindowBounds")
+                }
 
-                let tabs = try await adapter.listTabs(windowID: firstWindow.id)
+                let tabs: [BrowserTab]
+                do {
+                    tabs = try await adapter.listTabs(windowID: firstWindow.id)
+                } catch {
+                    throw wrap(error: error, browser: plan.browser, operation: "listTabs")
+                }
+
                 if let firstTab = tabs.first, plan.openDevToolsForFirstTab {
-                    try await adapter.openDevTools(tabID: firstTab.id)
+                    do {
+                        try await adapter.openDevTools(tabID: firstTab.id)
+                    } catch {
+                        throw wrap(error: error, browser: plan.browser, operation: "openDevTools")
+                    }
                 }
             }
         }
+    }
+
+    private func wrap(error: Error, browser: BrowserKind, operation: String) -> BrowserOrchestrationError {
+        if let automation = error as? BrowserAutomationError {
+            switch automation {
+            case let .appleScriptFailure(code, message):
+                return BrowserOrchestrationError(browser: browser, operation: operation, code: code, message: message)
+            }
+        }
+
+        return BrowserOrchestrationError(
+            browser: browser,
+            operation: operation,
+            code: nil,
+            message: error.localizedDescription
+        )
     }
 }
 
@@ -258,6 +395,28 @@ public struct AppleEventBrowserAdapter: BrowserAdapter {
     private func escapeAppleScriptString(_ value: String) -> String {
         value.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+}
+
+public struct CocoaAppleEventClient: AppleEventClient {
+    public init() {}
+
+    public func runScript(_ script: String) async throws -> String {
+        var errorInfo: NSDictionary?
+        guard let engine = NSAppleScript(source: script) else {
+            throw BrowserAutomationError.appleScriptFailure(code: -1, message: "Unable to create NSAppleScript engine")
+        }
+
+        let value = engine.executeAndReturnError(&errorInfo)
+        if let errorInfo {
+            let code = (errorInfo[NSAppleScript.errorNumber] as? Int) ?? -1
+            let message = (errorInfo[NSAppleScript.errorMessage] as? String)
+                ?? (errorInfo[NSAppleScript.errorBriefMessage] as? String)
+                ?? "AppleScript execution failed"
+            throw BrowserAutomationError.appleScriptFailure(code: code, message: message)
+        }
+
+        return value.stringValue ?? ""
     }
 }
 

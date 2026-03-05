@@ -17,6 +17,7 @@
 
 - `Sources/TerminalHost/TerminalHost.swift`
   - Terminal engine adapters and session manager.
+  - Includes `TerminalWorkspaceRuntime` and `TerminalPaneRuntimeState` for pane lifecycle, event consumption, and terminal input forwarding.
 
 - `Sources/TerminalHost/GhosttyRuntimeBridge.swift`
   - Concrete Ghostty runtime integration.
@@ -25,6 +26,7 @@
 - `Sources/BrowserOrchestrator/BrowserOrchestrator.swift`
   - Browser layout planning/orchestration and concrete integration adapters.
   - Includes `ChromiumDevToolsAdapter` target lifecycle cache and `URLSessionCDPClient`.
+  - Includes `CocoaAppleEventClient`, `BrowserOrchestrationError`, and `BrowserRecoveryAdvisor` for actionable browser recovery UX.
 
 - `Sources/Permissions/Permissions.swift`
   - Permission onboarding state machine, checker, and health evaluator/reporting.

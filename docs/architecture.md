@@ -32,6 +32,7 @@
 - `openDevTools`
 
 `BrowserWorkspaceOrchestrator` applies workspace browser plans through adapters.
+`BrowserRecoveryAdvisor` maps orchestration failures into actionable recovery steps for UI.
 
 ### DevTools
 
@@ -61,6 +62,11 @@
 - Lifecycle reducer (`StatusPillReducer`)
 - Heartbeat timeout handling and alert escalation
 - DevTools target lifecycle mapping via `DevToolsStatusEventMapper` + `DevToolsPillCoordinator`
+
+## Terminal Runtime
+
+- `TerminalWorkspaceRuntime` tracks per-pane terminal session lifecycle.
+- Terminal panes can be activated lazily from UI tabs, receive event snapshots, and accept input forwarding.
 
 ## TDD Process
 
