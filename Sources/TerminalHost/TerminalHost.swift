@@ -149,6 +149,129 @@ public actor TerminalSessionManager {
     }
 }
 
+public struct TerminalPaneRuntimeState: Equatable, Sendable {
+    public var paneID: String
+    public var workspaceID: String
+    public var command: [String]
+    public var isRunning: Bool
+    public var lastMessage: String
+    public var outputLines: [String]
+    public var exitCode: Int32?
+
+    public init(
+        paneID: String,
+        workspaceID: String,
+        command: [String],
+        isRunning: Bool,
+        lastMessage: String,
+        outputLines: [String] = [],
+        exitCode: Int32? = nil
+    ) {
+        self.paneID = paneID
+        self.workspaceID = workspaceID
+        self.command = command
+        self.isRunning = isRunning
+        self.lastMessage = lastMessage
+        self.outputLines = outputLines
+        self.exitCode = exitCode
+    }
+}
+
+public actor TerminalWorkspaceRuntime {
+    private let engine: TerminalEngine
+    private let manager: TerminalSessionManager
+    private var eventTasks: [String: Task<Void, Never>] = [:]
+    private var statesByPaneID: [String: TerminalPaneRuntimeState] = [:]
+
+    public init(engine: TerminalEngine) {
+        self.engine = engine
+        manager = TerminalSessionManager(engine: engine)
+    }
+
+    public func activateTerminal(config: TerminalSessionConfig) async throws {
+        if await manager.sessionID(for: config.paneID) != nil {
+            return
+        }
+
+        let sessionID = try await manager.start(config: config)
+        statesByPaneID[config.paneID] = TerminalPaneRuntimeState(
+            paneID: config.paneID,
+            workspaceID: config.workspaceID,
+            command: config.shellCommand,
+            isRunning: true,
+            lastMessage: "Session started"
+        )
+        startEventPump(paneID: config.paneID, sessionID: sessionID)
+    }
+
+    public func attachSurface(paneID: String, surfaceID: String) async throws {
+        try await manager.attachView(paneID: paneID, surfaceID: surfaceID)
+    }
+
+    public func sendInput(paneID: String, input: String) async throws {
+        guard let sessionID = await manager.sessionID(for: paneID) else {
+            throw FlouiError.notFound("no active terminal session for pane \(paneID)")
+        }
+
+        try await engine.sendInput(sessionID: sessionID, input: input)
+    }
+
+    public func sessionID(for paneID: String) async -> TerminalSessionID? {
+        await manager.sessionID(for: paneID)
+    }
+
+    public func snapshot(for paneID: String) -> TerminalPaneRuntimeState? {
+        statesByPaneID[paneID]
+    }
+
+    private func startEventPump(paneID: String, sessionID: TerminalSessionID) {
+        eventTasks[paneID]?.cancel()
+        eventTasks[paneID] = Task {
+            let stream = await self.engine.subscribeEvents(sessionID: sessionID)
+            for await event in stream {
+                self.consume(event: event, paneID: paneID)
+            }
+        }
+    }
+
+    private func consume(event: TerminalEvent, paneID: String) {
+        guard var state = statesByPaneID[paneID] else {
+            return
+        }
+
+        switch event {
+        case let .output(text):
+            appendOutput(text, to: &state.outputLines)
+            if let last = state.outputLines.last {
+                state.lastMessage = last
+            }
+
+        case let .status(message):
+            state.lastMessage = message
+
+        case let .processExited(code):
+            state.isRunning = false
+            state.exitCode = code
+            state.lastMessage = "Exited (\(code))"
+        }
+
+        statesByPaneID[paneID] = state
+    }
+
+    private func appendOutput(_ text: String, to lines: inout [String]) {
+        let normalized = text
+            .split(separator: "\n")
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        lines.append(contentsOf: normalized)
+        if lines.count > 400 {
+            lines.removeFirst(lines.count - 400)
+        }
+    }
+}
+
 public struct StatusEventEmitter {
     private let transport: SocketTransport
     private let codec: StatusEventCodec

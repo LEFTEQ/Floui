@@ -38,6 +38,41 @@ actor RecordingSurfaceBridge: TerminalSurfaceBridge {
     }
 }
 
+actor RuntimeMockTerminalEngine: TerminalEngine {
+    var startedConfigs: [TerminalSessionConfig] = []
+    var sentInputs: [(TerminalSessionID, String)] = []
+    var continuations: [TerminalSessionID: AsyncStream<TerminalEvent>.Continuation] = [:]
+    var streams: [TerminalSessionID: AsyncStream<TerminalEvent>] = [:]
+
+    func startSession(config: TerminalSessionConfig) async throws -> TerminalSessionID {
+        startedConfigs.append(config)
+        let id = TerminalSessionID()
+        var continuationBox: AsyncStream<TerminalEvent>.Continuation?
+        let stream = AsyncStream<TerminalEvent> { continuation in
+            continuationBox = continuation
+        }
+        streams[id] = stream
+        continuations[id] = continuationBox
+        return id
+    }
+
+    func attachView(sessionID _: TerminalSessionID, surfaceID _: String) async throws {}
+
+    func sendInput(sessionID: TerminalSessionID, input: String) async throws {
+        sentInputs.append((sessionID, input))
+    }
+
+    func resize(sessionID _: TerminalSessionID, cols _: Int, rows _: Int) async throws {}
+
+    func subscribeEvents(sessionID: TerminalSessionID) async -> AsyncStream<TerminalEvent> {
+        streams[sessionID] ?? AsyncStream { continuation in continuation.finish() }
+    }
+
+    func emit(sessionID: TerminalSessionID, event: TerminalEvent) {
+        continuations[sessionID]?.yield(event)
+    }
+}
+
 actor ImmediateProcessRunner: ProcessRunner {
     let status: Int32
 
@@ -207,5 +242,62 @@ func ghosttyRuntimeBridgePropagatesProviderFailure() async {
             paneID: "pane-1",
             shellCommand: ["/bin/zsh"]
         ))
+    }
+}
+
+@Test("TerminalWorkspaceRuntime starts once and tracks terminal events")
+func terminalWorkspaceRuntimeLifecycle() async throws {
+    let engine = RuntimeMockTerminalEngine()
+    let runtime = TerminalWorkspaceRuntime(engine: engine)
+
+    let config = TerminalSessionConfig(
+        workspaceID: "w1",
+        paneID: "term-1",
+        shellCommand: ["/bin/zsh"]
+    )
+
+    try await runtime.activateTerminal(config: config)
+    try await runtime.activateTerminal(config: config)
+
+    let started = await engine.startedConfigs
+    #expect(started.count == 1)
+
+    guard let sessionID = await runtime.sessionID(for: "term-1") else {
+        Issue.record("missing session id")
+        return
+    }
+
+    await engine.emit(sessionID: sessionID, event: .status("booted"))
+    await engine.emit(sessionID: sessionID, event: .processExited(0))
+    try? await Task.sleep(nanoseconds: 30_000_000)
+
+    let snapshot = await runtime.snapshot(for: "term-1")
+    #expect(snapshot?.isRunning == false)
+    #expect(snapshot?.lastMessage == "Exited (0)")
+    #expect(snapshot?.exitCode == 0)
+}
+
+@Test("TerminalWorkspaceRuntime forwards input and errors for missing panes")
+func terminalWorkspaceRuntimeInputForwarding() async throws {
+    let engine = RuntimeMockTerminalEngine()
+    let runtime = TerminalWorkspaceRuntime(engine: engine)
+
+    let config = TerminalSessionConfig(
+        workspaceID: "w1",
+        paneID: "term-1",
+        shellCommand: ["/bin/zsh"]
+    )
+
+    try await runtime.activateTerminal(config: config)
+    try await runtime.sendInput(paneID: "term-1", input: "echo hello\n")
+    let sent = await engine.sentInputs
+    #expect(sent.count == 1)
+    #expect(sent.first?.1 == "echo hello\n")
+
+    do {
+        try await runtime.sendInput(paneID: "missing", input: "x")
+        Issue.record("Expected missing pane to throw")
+    } catch let error as FlouiError {
+        #expect(error == FlouiError.notFound("no active terminal session for pane missing"))
     }
 }

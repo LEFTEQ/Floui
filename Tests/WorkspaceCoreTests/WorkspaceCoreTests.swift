@@ -189,3 +189,81 @@ func workspaceStateStoreMalformedData() async throws {
         _ = try await store.load()
     }
 }
+
+@Test("Layout reducer selects tabs and tracks active window")
+func layoutReducerSelectTabAndActiveWindow() {
+    let manifest = WorkspaceManifest(
+        id: "w1",
+        name: "Workspace",
+        version: 1,
+        columns: [
+            WorkspaceColumnManifest(
+                id: "c1",
+                windows: [
+                    WorkspaceMiniWindowManifest(
+                        id: "win-1",
+                        activeTabID: "t1",
+                        tabs: [
+                            WorkspaceTabManifest(id: "t1", title: "One", type: .terminal),
+                            WorkspaceTabManifest(id: "t2", title: "Two", type: .browser),
+                        ]
+                    ),
+                    WorkspaceMiniWindowManifest(
+                        id: "win-2",
+                        activeTabID: "t3",
+                        tabs: [
+                            WorkspaceTabManifest(id: "t3", title: "Three", type: .terminal),
+                        ]
+                    ),
+                ]
+            )
+        ]
+    )
+
+    var state = WorkspaceLayoutState()
+    WorkspaceLayoutReducer.reduce(state: &state, action: .loadManifest(manifest))
+    WorkspaceLayoutReducer.reduce(state: &state, action: .selectTab(windowID: "win-1", tabID: "t2"))
+
+    let activeWorkspace = state.workspaces["w1"]
+    let window1 = activeWorkspace?.columns.first?.windows.first(where: { $0.id == "win-1" })
+    #expect(window1?.activeTabID == "t2")
+    #expect(state.activeWindowIDByWorkspace["w1"] == "win-1")
+}
+
+@Test("Layout reducer cycles tabs with wrap-around")
+func layoutReducerCycleTabs() {
+    let manifest = WorkspaceManifest(
+        id: "w1",
+        name: "Workspace",
+        version: 1,
+        columns: [
+            WorkspaceColumnManifest(
+                id: "c1",
+                windows: [
+                    WorkspaceMiniWindowManifest(
+                        id: "win-1",
+                        activeTabID: "t1",
+                        tabs: [
+                            WorkspaceTabManifest(id: "t1", title: "One", type: .terminal),
+                            WorkspaceTabManifest(id: "t2", title: "Two", type: .browser),
+                            WorkspaceTabManifest(id: "t3", title: "Three", type: .terminal),
+                        ]
+                    )
+                ]
+            )
+        ]
+    )
+
+    var state = WorkspaceLayoutState()
+    WorkspaceLayoutReducer.reduce(state: &state, action: .loadManifest(manifest))
+    WorkspaceLayoutReducer.reduce(state: &state, action: .cycleTab(direction: .previous))
+
+    var activeWorkspace = state.workspaces["w1"]
+    var window1 = activeWorkspace?.columns.first?.windows.first(where: { $0.id == "win-1" })
+    #expect(window1?.activeTabID == "t3")
+
+    WorkspaceLayoutReducer.reduce(state: &state, action: .cycleTab(direction: .next))
+    activeWorkspace = state.workspaces["w1"]
+    window1 = activeWorkspace?.columns.first?.windows.first(where: { $0.id == "win-1" })
+    #expect(window1?.activeTabID == "t1")
+}

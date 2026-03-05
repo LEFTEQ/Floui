@@ -29,6 +29,36 @@ actor HybridBrowserAdapter: BrowserAdapter {
     func openDevTools(tabID _: BrowserTabID) async throws {}
 }
 
+actor HybridTerminalEngine: TerminalEngine {
+    var startedConfigs: [TerminalSessionConfig] = []
+    var streams: [TerminalSessionID: AsyncStream<TerminalEvent>] = [:]
+    var continuations: [TerminalSessionID: AsyncStream<TerminalEvent>.Continuation] = [:]
+
+    func startSession(config: TerminalSessionConfig) async throws -> TerminalSessionID {
+        startedConfigs.append(config)
+        let sessionID = TerminalSessionID()
+        var continuationBox: AsyncStream<TerminalEvent>.Continuation?
+        let stream = AsyncStream<TerminalEvent> { continuation in
+            continuationBox = continuation
+        }
+        streams[sessionID] = stream
+        continuations[sessionID] = continuationBox
+        return sessionID
+    }
+
+    func attachView(sessionID _: TerminalSessionID, surfaceID _: String) async throws {}
+    func sendInput(sessionID _: TerminalSessionID, input _: String) async throws {}
+    func resize(sessionID _: TerminalSessionID, cols _: Int, rows _: Int) async throws {}
+
+    func subscribeEvents(sessionID: TerminalSessionID) async -> AsyncStream<TerminalEvent> {
+        streams[sessionID] ?? AsyncStream { continuation in continuation.finish() }
+    }
+
+    func emit(sessionID: TerminalSessionID, event: TerminalEvent) {
+        continuations[sessionID]?.yield(event)
+    }
+}
+
 @Test("Hybrid flow: parse -> restore -> browser orchestration -> status pills")
 func hybridEndToEndFlow() async throws {
     let yaml = """
@@ -238,4 +268,59 @@ func hybridChromiumAdapterToPillFlow() async throws {
     let store = await coordinator.storeSnapshot()
     #expect(store.pillsByPaneID["pill-cdp"]?.unreadAlerts == 1)
     #expect(store.pillsByPaneID["pill-cdp"]?.severity == .warning)
+}
+
+@Test("Hybrid flow: terminal runtime + tab cycling shortcuts behave end-to-end")
+func hybridTerminalRuntimeAndTabCycleFlow() async throws {
+    let manifest = WorkspaceManifest(
+        id: "default",
+        name: "Default",
+        version: 1,
+        columns: [
+            WorkspaceColumnManifest(
+                id: "c1",
+                windows: [
+                    WorkspaceMiniWindowManifest(
+                        id: "w1",
+                        activeTabID: "term-1",
+                        tabs: [
+                            WorkspaceTabManifest(id: "term-1", title: "Terminal", type: .terminal, command: ["/bin/zsh"]),
+                            WorkspaceTabManifest(id: "browser-1", title: "Browser", type: .browser, browser: .chrome, url: "https://example.com"),
+                        ]
+                    )
+                ]
+            )
+        ]
+    )
+
+    var layoutState = WorkspaceLayoutState()
+    WorkspaceLayoutReducer.reduce(state: &layoutState, action: .loadManifest(manifest))
+
+    let engine = HybridTerminalEngine()
+    let runtime = TerminalWorkspaceRuntime(engine: engine)
+    try await runtime.activateTerminal(config: TerminalSessionConfig(
+        workspaceID: "default",
+        paneID: "term-1",
+        shellCommand: ["/bin/zsh"]
+    ))
+
+    guard let sessionID = await runtime.sessionID(for: "term-1") else {
+        Issue.record("terminal session not started")
+        return
+    }
+
+    await engine.emit(sessionID: sessionID, event: .status("running"))
+    await engine.emit(sessionID: sessionID, event: .processExited(0))
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
+    let terminalSnapshot = await runtime.snapshot(for: "term-1")
+    #expect(terminalSnapshot?.isRunning == false)
+    #expect(terminalSnapshot?.exitCode == 0)
+
+    WorkspaceLayoutReducer.reduce(state: &layoutState, action: .cycleTab(direction: .next))
+    let activeTab = layoutState.workspaces["default"]?
+        .columns.first?
+        .windows.first?
+        .activeTabID
+    #expect(activeTab == "browser-1")
 }
