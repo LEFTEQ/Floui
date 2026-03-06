@@ -31,7 +31,7 @@
 - `Sources/FlouiApp/AppShellPresentation.swift`
   - Reusable presentation helpers for the SwiftUI shell.
   - Includes `WorkspacePresentationSummary`, `FixedPillPresentation`, and `RelativeActivityFormatter` so sidebar/header/pill views share deterministic formatting logic instead of duplicating it in view bodies.
-  - Includes `TerminalRuntimePanelPresentation` for the live-runtime sidebar cards, status counts, and terminal ordering logic.
+  - Includes `TerminalRuntimePanelPresentation` and `TerminalRuntimeActivityKind` for the live-runtime sidebar cards, task classification, docker/manual command detection, status counts, and terminal ordering logic.
 
 - `Sources/FlouiApp/ShellIntegration.swift`
   - Shared shell bootstrapper for interactive terminal sessions.
@@ -40,6 +40,10 @@
 - `Sources/FlouiApp/TerminalTextViews.swift`
   - Shared AppKit-backed transcript surface.
   - Includes `SelectableTerminalTranscriptView` for searchable, selectable, copy-friendly scrollback inside SwiftUI terminal panes.
+
+- `Sources/FlouiApp/FlouiAppMain.swift`
+  - App shell runtime wiring.
+  - `TerminalRuntimeViewModel` now owns shell-aware quick actions (`interrupt`, `rerunRecentCommand`, generic `runCommand`) so the runtime sidebar and pane chrome reuse the same dispatch path instead of duplicating terminal-control logic in views.
 
 - `Sources/FlouiApp/GlobalTaskRunner.swift`
   - Reusable repository-discovery and quick-run orchestration for dev workflows.
@@ -70,3 +74,4 @@
 - Repo/task discovery should go through `GlobalTaskRunner.swift`; avoid ad-hoc filesystem parsing in SwiftUI views.
 - Shell-aware terminal context should flow through `ShellIntegration.swift` and `TerminalIntegration.swift`; avoid parsing ad-hoc prompt text directly in views or reducers.
 - Transcript rendering/search/selection should go through `TerminalTextViews.swift`; avoid rebuilding custom transcript widgets in individual panes.
+- Runtime control actions should route through `TerminalRuntimeViewModel`; avoid sending raw terminal control sequences directly from SwiftUI views.

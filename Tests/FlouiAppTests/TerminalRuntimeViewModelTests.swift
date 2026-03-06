@@ -6,15 +6,18 @@ import WorkspaceCore
 
 actor AppMockTerminalEngine: TerminalEngine {
     private(set) var startedConfigs: [TerminalSessionConfig] = []
+    private(set) var startedSessionIDs: [TerminalSessionID] = []
     private(set) var attachedSurfaces: [(TerminalSessionID, String)] = []
     private(set) var sentInputs: [(TerminalSessionID, String)] = []
     private var streams: [TerminalSessionID: AsyncStream<TerminalEvent>] = [:]
+    private var continuations: [TerminalSessionID: AsyncStream<TerminalEvent>.Continuation] = [:]
 
     func startSession(config: TerminalSessionConfig) async throws -> TerminalSessionID {
         startedConfigs.append(config)
         let sessionID = TerminalSessionID()
+        startedSessionIDs.append(sessionID)
         streams[sessionID] = AsyncStream { continuation in
-            continuation.finish()
+            continuations[sessionID] = continuation
         }
         return sessionID
     }
@@ -32,6 +35,10 @@ actor AppMockTerminalEngine: TerminalEngine {
         streams[sessionID] ?? AsyncStream { continuation in
             continuation.finish()
         }
+    }
+
+    func emit(sessionID: TerminalSessionID, event: TerminalEvent) {
+        continuations[sessionID]?.yield(event)
     }
 }
 
@@ -129,4 +136,42 @@ func restoredTerminalsRequireExplicitStart() async throws {
     #expect(attachedSurfaces.first?.1 == "surface-1")
     #expect(runtime.requiresManualStart(paneID: "term-1") == false)
     #expect(runtime.snapshotsByPaneID["term-1"]?.isRunning == true)
+}
+
+@MainActor
+@Test("Terminal runtime can interrupt the active command and rerun recent shell history")
+func terminalRuntimeSupportsInterruptAndRerun() async throws {
+    let engine = AppMockTerminalEngine()
+    let runtime = TerminalRuntimeViewModel(engine: engine)
+    let tab = WorkspaceTabManifest(
+        id: "term-1",
+        title: "Terminal",
+        type: .terminal,
+        command: ["/bin/zsh"],
+        workingDirectory: "/repo"
+    )
+
+    runtime.start(tab: tab, workspaceID: "w1", surfaceID: "surface-1")
+    try await Task.sleep(nanoseconds: 75_000_000)
+
+    let started = await engine.startedConfigs
+    let sessionID = try #require(await engine.startedSessionIDs.first)
+    #expect(started.count == 1)
+
+    await engine.emit(
+        sessionID: sessionID,
+        event: .output("__FLOUI__RUN\tpnpm run dev\nserver ready\n__FLOUI__IDLE\n")
+    )
+
+    try await Task.sleep(nanoseconds: 75_000_000)
+
+    runtime.interrupt(paneID: "term-1")
+    runtime.rerunRecentCommand(paneID: "term-1")
+
+    try await Task.sleep(nanoseconds: 125_000_000)
+
+    let inputs = await engine.sentInputs.map(\.1)
+    #expect(inputs.contains("\u{3}"))
+    #expect(inputs.contains("pnpm run dev\n"))
+    #expect(runtime.snapshotsByPaneID["term-1"]?.recentCommands.first == "pnpm run dev")
 }

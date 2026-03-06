@@ -367,7 +367,13 @@ struct AppShellView: View {
                 )
 
                 TerminalRuntimePanelSectionView(
-                    presentation: terminalRuntimePanelPresentation
+                    presentation: terminalRuntimePanelPresentation,
+                    onInterrupt: { paneID in
+                        terminalRuntime.interrupt(paneID: paneID)
+                    },
+                    onRerun: { paneID in
+                        terminalRuntime.rerunRecentCommand(paneID: paneID)
+                    }
                 )
 
                 Spacer(minLength: 0)
@@ -511,7 +517,8 @@ struct AppShellView: View {
     private var terminalRuntimePanelPresentation: TerminalRuntimePanelPresentation {
         TerminalRuntimePanelPresentation.build(
             layoutState: layoutState,
-            snapshotsByPaneID: terminalRuntime.snapshotsByPaneID
+            snapshotsByPaneID: terminalRuntime.snapshotsByPaneID,
+            taskRunnerSnapshot: globalTaskRunner.snapshot
         )
     }
 
@@ -898,6 +905,8 @@ struct GlobalTaskRunnerSectionView: View {
 
 struct TerminalRuntimePanelSectionView: View {
     let presentation: TerminalRuntimePanelPresentation
+    let onInterrupt: (String) -> Void
+    let onRerun: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -907,7 +916,7 @@ struct TerminalRuntimePanelSectionView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Live Runtime")
                     .font(.headline)
-                Text(presentation.entries.isEmpty ? "No terminal panes detected" : "Foreground commands, directories, and branch context across terminal panes.")
+                Text(presentation.entries.isEmpty ? "No terminal panes detected" : "Foreground commands, matched repo tasks, and Docker flows across terminal panes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -916,6 +925,14 @@ struct TerminalRuntimePanelSectionView: View {
                 ShellStatBadge(value: presentation.liveCount, label: "live", tone: .active)
                 ShellStatBadge(value: presentation.readyCount, label: "ready", tone: .idle)
                 ShellStatBadge(value: presentation.stoppedCount, label: "stopped", tone: .warning)
+            }
+
+            if presentation.liveCount > 0 {
+                HStack(spacing: 8) {
+                    ShellStatBadge(value: presentation.knownTaskCount, label: "known", tone: .active)
+                    ShellStatBadge(value: presentation.dockerTaskCount, label: "docker", tone: .idle)
+                    ShellStatBadge(value: presentation.manualTaskCount, label: "manual", tone: .warning)
+                }
             }
 
             if presentation.entries.isEmpty {
@@ -929,7 +946,15 @@ struct TerminalRuntimePanelSectionView: View {
                     }
             } else {
                 ForEach(Array(presentation.entries.prefix(5))) { entry in
-                    TerminalRuntimeEntryCardView(entry: entry)
+                    TerminalRuntimeEntryCardView(
+                        entry: entry,
+                        onInterrupt: {
+                            onInterrupt(entry.paneID)
+                        },
+                        onRerun: {
+                            onRerun(entry.paneID)
+                        }
+                    )
                 }
 
                 if presentation.entries.count > 5 {
@@ -945,6 +970,8 @@ struct TerminalRuntimePanelSectionView: View {
 
 struct TerminalRuntimeEntryCardView: View {
     let entry: TerminalRuntimeEntryPresentation
+    let onInterrupt: () -> Void
+    let onRerun: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -952,7 +979,7 @@ struct TerminalRuntimeEntryCardView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(entry.terminalTitle)
                         .font(.caption.weight(.semibold))
-                    Text(entry.workspaceName)
+                    Text(contextLabel)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -971,6 +998,20 @@ struct TerminalRuntimeEntryCardView: View {
                 .foregroundStyle(.primary)
                 .lineLimit(1)
 
+            if let matchedTaskTitle = entry.matchedTaskTitle {
+                HStack(spacing: 6) {
+                    Text(matchedTaskTitle)
+                        .font(.caption2.weight(.semibold))
+                    Text(entry.activityKind.label)
+                        .font(.caption2.monospaced())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.white.opacity(0.07))
+                        .clipShape(Capsule())
+                }
+                .foregroundStyle(.secondary)
+            }
+
             HStack(spacing: 6) {
                 Text(entry.directoryLabel)
                     .font(.caption2.monospaced())
@@ -986,30 +1027,64 @@ struct TerminalRuntimeEntryCardView: View {
                 }
             }
 
+            if !entry.recentCommands.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(entry.recentCommands, id: \.self) { command in
+                            Text(command)
+                                .font(.caption2.monospaced())
+                                .lineLimit(1)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(Color.white.opacity(0.05))
+                                .clipShape(Capsule())
+                        }
+                    }
+                }
+            }
+
             Text(entry.shellLabel)
                 .font(.caption2.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+
+            HStack(spacing: 8) {
+                if entry.activityKind.isTask && entry.isRunning {
+                    Button("Stop", action: onInterrupt)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+
+                if !entry.recentCommands.isEmpty {
+                    Button("Rerun", action: onRerun)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
         }
         .padding(12)
         .background(Color.white.opacity(0.04))
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
+    private var contextLabel: String {
+        if let repositoryLabel = entry.repositoryLabel, !repositoryLabel.isEmpty {
+            return "\(entry.workspaceName) · \(repositoryLabel)"
+        }
+
+        return entry.workspaceName
+    }
+
     private var statusLabel: String {
-        if entry.tone == .active {
-            return "task"
-        }
-
-        if entry.isRunning {
-            return "ready"
-        }
-
-        return "stopped"
+        entry.activityKind.label
     }
 
     private var statusColor: Color {
-        if entry.tone == .active {
+        if entry.activityKind == .dockerCompose {
+            return .blue
+        }
+
+        if entry.activityKind.isTask {
             return .cyan
         }
 
@@ -1369,6 +1444,15 @@ struct MiniWindowCard: View {
                             },
                             onSubmitInput: { value in
                                 terminalRuntime.sendInput(paneID: tab.id, input: value + "\n")
+                            },
+                            onInterrupt: {
+                                terminalRuntime.interrupt(paneID: tab.id)
+                            },
+                            onRerunRecentCommand: {
+                                terminalRuntime.rerunRecentCommand(paneID: tab.id)
+                            },
+                            onRunRecentCommand: { command in
+                                terminalRuntime.runCommand(command, paneID: tab.id)
                             }
                         )
 
@@ -1418,6 +1502,11 @@ struct MiniWindowCard: View {
 }
 
 struct TerminalPaneView: View {
+    private enum FocusField: Hashable {
+        case transcriptSearch
+        case commandInput
+    }
+
     let tab: WorkspaceTabManifest
     let workspaceID: String
     let snapshot: TerminalPaneRuntimeState?
@@ -1427,7 +1516,11 @@ struct TerminalPaneView: View {
     let onAppear: () -> Void
     let onStart: () -> Void
     let onSubmitInput: (String) -> Void
+    let onInterrupt: () -> Void
+    let onRerunRecentCommand: () -> Void
+    let onRunRecentCommand: (String) -> Void
     @State private var transcriptSearch = ""
+    @FocusState private var focusedField: FocusField?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1484,14 +1577,39 @@ struct TerminalPaneView: View {
             }
 
             HStack(spacing: 8) {
+                Button("Find") {
+                    focusedField = .transcriptSearch
+                }
+                .buttonStyle(.bordered)
+
                 TextField("Search scrollback", text: $transcriptSearch)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
+                    .focused($focusedField, equals: .transcriptSearch)
 
                 Button("Copy") {
                     copyTranscript()
                 }
                 .buttonStyle(.bordered)
+
+                Button("Paste") {
+                    pasteClipboardIntoInput()
+                }
+                .buttonStyle(.bordered)
+
+                if snapshot?.isRunning == true {
+                    Button("Stop") {
+                        onInterrupt()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if !(snapshot?.recentCommands.isEmpty ?? true) {
+                    Button("Rerun") {
+                        onRerunRecentCommand()
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
 
             SelectableTerminalTranscriptView(
@@ -1501,9 +1619,31 @@ struct TerminalPaneView: View {
             .frame(height: 190)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.42)))
 
+            if let recentCommands = snapshot?.recentCommands, !recentCommands.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(recentCommands.prefix(5)), id: \.self) { command in
+                            Button {
+                                onRunRecentCommand(command)
+                            } label: {
+                                Text(command)
+                                    .font(.caption2.monospaced())
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.white.opacity(0.06))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
             TextField(inputPlaceholder, text: $inputText)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption)
+                .focused($focusedField, equals: .commandInput)
                 .disabled(snapshot?.isRunning != true)
                 .onSubmit {
                     let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1515,6 +1655,12 @@ struct TerminalPaneView: View {
                 }
         }
         .onAppear(perform: onAppear)
+        .onExitCommand {
+            if !transcriptSearch.isEmpty {
+                transcriptSearch = ""
+            }
+            focusedField = .commandInput
+        }
     }
 
     private var transcriptText: String {
@@ -1531,6 +1677,20 @@ struct TerminalPaneView: View {
     private func copyTranscript() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(transcriptText, forType: .string)
+    }
+
+    private func pasteClipboardIntoInput() {
+        guard let value = NSPasteboard.general.string(forType: .string), !value.isEmpty else {
+            return
+        }
+
+        if inputText.isEmpty {
+            inputText = value
+        } else {
+            inputText += value
+        }
+
+        focusedField = .commandInput
     }
 
     private var startButtonTitle: String {
@@ -1695,6 +1855,47 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
     func sendInput(paneID: String, input: String) {
         Task { [runtime] in
             try? await runtime.sendInput(paneID: paneID, input: input)
+        }
+    }
+
+    func interrupt(paneID: String) {
+        Task { [weak self] in
+            await self?.dispatchCommand("\u{3}", to: paneID, appendNewline: false)
+        }
+    }
+
+    func rerunRecentCommand(paneID: String) {
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            let recentCommand = await self.runtime.snapshot(for: paneID)?.recentCommands.first
+                ?? self.snapshotsByPaneID[paneID]?.recentCommands.first
+
+            guard
+                let recentCommand,
+                !recentCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                return
+            }
+
+            await self.dispatchCommand(
+                recentCommand.trimmingCharacters(in: .whitespacesAndNewlines),
+                to: paneID,
+                appendNewline: true
+            )
+        }
+    }
+
+    func runCommand(_ command: String, paneID: String) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+
+        Task { [weak self] in
+            await self?.dispatchCommand(trimmed, to: paneID, appendNewline: true)
         }
     }
 
@@ -1879,6 +2080,52 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
                 workingDirectory: prepared?.workingDirectory,
                 isRunning: false,
                 lastMessage: "Quick run failed: \(error.localizedDescription)",
+                outputLines: snapshotsByPaneID[paneID]?.outputLines ?? []
+            )
+        }
+    }
+
+    private func dispatchCommand(_ command: String, to paneID: String, appendNewline: Bool) async {
+        let payload = appendNewline ? "\(command)\n" : command
+
+        guard let prepared = preparedConfigsByPaneID[paneID] else {
+            return
+        }
+
+        await ensureSessionStarted(for: paneID)
+
+        do {
+            try await runtime.sendInput(paneID: paneID, input: payload)
+
+            if var snapshot = snapshotsByPaneID[paneID] {
+                if appendNewline, snapshot.recentCommands.first != command {
+                    snapshot.recentCommands.insert(command, at: 0)
+                    if snapshot.recentCommands.count > 20 {
+                        snapshot.recentCommands.removeLast(snapshot.recentCommands.count - 20)
+                    }
+                }
+                snapshot.lastMessage = appendNewline ? "Queued: \(command)" : "Sent interrupt"
+                snapshotsByPaneID[paneID] = snapshot
+            } else {
+                snapshotsByPaneID[paneID] = TerminalPaneRuntimeState(
+                    paneID: paneID,
+                    workspaceID: prepared.workspaceID,
+                    command: prepared.command,
+                    workingDirectory: prepared.workingDirectory,
+                    recentCommands: appendNewline ? [command] : [],
+                    isRunning: true,
+                    lastMessage: appendNewline ? "Queued: \(command)" : "Sent interrupt",
+                    outputLines: []
+                )
+            }
+        } catch {
+            snapshotsByPaneID[paneID] = TerminalPaneRuntimeState(
+                paneID: paneID,
+                workspaceID: prepared.workspaceID,
+                command: prepared.command,
+                workingDirectory: prepared.workingDirectory,
+                isRunning: false,
+                lastMessage: "Dispatch failed: \(error.localizedDescription)",
                 outputLines: snapshotsByPaneID[paneID]?.outputLines ?? []
             )
         }

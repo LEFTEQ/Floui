@@ -206,7 +206,8 @@ func terminalRuntimePanelPresentationSummarizesShellState() {
 
     let panel = TerminalRuntimePanelPresentation.build(
         layoutState: layoutState,
-        snapshotsByPaneID: snapshots
+        snapshotsByPaneID: snapshots,
+        taskRunnerSnapshot: .empty
     )
 
     #expect(panel.liveCount == 1)
@@ -216,4 +217,125 @@ func terminalRuntimePanelPresentationSummarizesShellState() {
     #expect(panel.entries.first?.activityLabel == "pnpm run dev")
     #expect(panel.entries.first?.branchLabel == "main")
     #expect(panel.entries.first?.directoryLabel == "apps/web")
+}
+
+@Test("Terminal runtime panel matches known task catalogs and classifies docker activity")
+func terminalRuntimePanelPresentationMatchesKnownTasks() {
+    let layoutState = WorkspaceLayoutState(
+        activeWorkspaceID: "shipyard",
+        workspaceOrder: ["shipyard", "ops"],
+        workspaces: [
+            "shipyard": WorkspaceManifest(
+                id: "shipyard",
+                name: "Shipyard",
+                version: 1,
+                columns: [
+                    WorkspaceColumnManifest(
+                        id: "col-1",
+                        windows: [
+                            WorkspaceMiniWindowManifest(
+                                id: "win-1",
+                                tabs: [
+                                    WorkspaceTabManifest(id: "term-1", title: "Web", type: .terminal, command: ["/bin/zsh"], workingDirectory: "/repo/apps/web"),
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            ),
+            "ops": WorkspaceManifest(
+                id: "ops",
+                name: "Ops",
+                version: 1,
+                columns: [
+                    WorkspaceColumnManifest(
+                        id: "col-2",
+                        windows: [
+                            WorkspaceMiniWindowManifest(
+                                id: "win-2",
+                                tabs: [
+                                    WorkspaceTabManifest(id: "term-2", title: "Logs", type: .terminal, command: ["/bin/bash"], workingDirectory: "/infra"),
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            ),
+        ]
+    )
+
+    let taskSnapshot = GlobalTaskRunnerSnapshot(catalogs: [
+        DeveloperTerminalTaskCatalog(
+            context: DeveloperTerminalTaskContext(
+                paneID: "term-1",
+                workspaceID: "shipyard",
+                workspaceName: "Shipyard",
+                terminalTitle: "Web",
+                shellCommand: ["/bin/zsh"],
+                workingDirectory: "/repo/apps/web"
+            ),
+            repositoryName: "repo",
+            repositoryRoot: "/repo",
+            relativeDirectoryLabel: "apps/web",
+            capabilities: [.nodePackageScripts, .dockerCompose],
+            tasks: [
+                DeveloperTask(
+                    title: "dev",
+                    command: "pnpm run dev",
+                    source: .packageScript,
+                    detail: "Vite dev server",
+                    priority: 10
+                ),
+                DeveloperTask(
+                    title: "logs app",
+                    command: "docker compose logs -f app",
+                    source: .dockerCompose,
+                    detail: "Compose logs",
+                    priority: 10
+                ),
+            ]
+        ),
+    ])
+
+    let snapshots = [
+        "term-1": TerminalPaneRuntimeState(
+            paneID: "term-1",
+            workspaceID: "shipyard",
+            command: ["/bin/zsh", "-i"],
+            workingDirectory: "/repo/apps/web",
+            currentDirectory: "/repo/apps/web",
+            gitBranch: "main",
+            activeCommand: "cd '/repo' && docker compose logs -f app",
+            recentCommands: ["cd '/repo' && docker compose logs -f app"],
+            isRunning: true,
+            lastMessage: "streaming logs"
+        ),
+        "term-2": TerminalPaneRuntimeState(
+            paneID: "term-2",
+            workspaceID: "ops",
+            command: ["/bin/bash", "-i"],
+            workingDirectory: "/infra",
+            currentDirectory: "/infra",
+            gitBranch: nil,
+            activeCommand: "node scripts/custom-tail.js",
+            recentCommands: ["node scripts/custom-tail.js"],
+            isRunning: true,
+            lastMessage: "tailing"
+        ),
+    ]
+
+    let panel = TerminalRuntimePanelPresentation.build(
+        layoutState: layoutState,
+        snapshotsByPaneID: snapshots,
+        taskRunnerSnapshot: taskSnapshot
+    )
+
+    #expect(panel.liveCount == 2)
+    #expect(panel.knownTaskCount == 1)
+    #expect(panel.dockerTaskCount == 1)
+    #expect(panel.manualTaskCount == 1)
+    #expect(panel.entries.first?.repositoryLabel == "repo")
+    #expect(panel.entries.first?.matchedTaskTitle == "logs app")
+    #expect(panel.entries.first?.activityKind == .dockerCompose)
+    #expect(panel.entries[1].activityKind == .manual)
 }

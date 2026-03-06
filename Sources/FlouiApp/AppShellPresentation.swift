@@ -228,13 +228,58 @@ struct TerminalRuntimeEntryPresentation: Equatable, Sendable, Identifiable {
     let workspaceID: String
     let workspaceName: String
     let terminalTitle: String
+    let repositoryLabel: String?
     let shellLabel: String
     let directoryLabel: String
     let branchLabel: String?
     let activityLabel: String
+    let matchedTaskTitle: String?
+    let activityKind: TerminalRuntimeActivityKind
+    let recentCommands: [String]
     let isRunning: Bool
     let isActiveWorkspace: Bool
     let tone: AppShellTone
+}
+
+enum TerminalRuntimeActivityKind: String, Equatable, Sendable {
+    case ready
+    case stopped
+    case packageScript
+    case dockerCompose
+    case make
+    case swiftPackage
+    case xcode
+    case manual
+
+    var label: String {
+        switch self {
+        case .ready:
+            return "ready"
+        case .stopped:
+            return "stopped"
+        case .packageScript:
+            return "script"
+        case .dockerCompose:
+            return "docker"
+        case .make:
+            return "make"
+        case .swiftPackage:
+            return "swift"
+        case .xcode:
+            return "xcode"
+        case .manual:
+            return "manual"
+        }
+    }
+
+    var isTask: Bool {
+        switch self {
+        case .ready, .stopped:
+            return false
+        case .packageScript, .dockerCompose, .make, .swiftPackage, .xcode, .manual:
+            return true
+        }
+    }
 }
 
 struct TerminalRuntimePanelPresentation: Equatable, Sendable {
@@ -242,11 +287,19 @@ struct TerminalRuntimePanelPresentation: Equatable, Sendable {
     let liveCount: Int
     let readyCount: Int
     let stoppedCount: Int
+    let knownTaskCount: Int
+    let dockerTaskCount: Int
+    let manualTaskCount: Int
 
     static func build(
         layoutState: WorkspaceLayoutState,
-        snapshotsByPaneID: [String: TerminalPaneRuntimeState]
+        snapshotsByPaneID: [String: TerminalPaneRuntimeState],
+        taskRunnerSnapshot: GlobalTaskRunnerSnapshot
     ) -> TerminalRuntimePanelPresentation {
+        let catalogsByPaneID = Dictionary(
+            uniqueKeysWithValues: taskRunnerSnapshot.catalogs.map { ($0.context.paneID, $0) }
+        )
+
         let entries = layoutState.workspaceOrder
             .compactMap { layoutState.workspaces[$0] }
             .flatMap { workspace in
@@ -259,22 +312,34 @@ struct TerminalRuntimePanelPresentation: Equatable, Sendable {
                         }
 
                         let snapshot = snapshotsByPaneID[tab.id]
+                        let catalog = catalogsByPaneID[tab.id]
                         let currentDirectory = snapshot?.currentDirectory ?? snapshot?.workingDirectory ?? tab.workingDirectory
                         let activityLabel: String
                         let tone: AppShellTone
+                        let activityKind: TerminalRuntimeActivityKind
+                        let matchedTaskTitle: String?
 
                         if let activeCommand = snapshot?.activeCommand, !activeCommand.isEmpty {
                             activityLabel = activeCommand
                             tone = .active
+                            let matchedTask = matchedTask(for: activeCommand, catalog: catalog)
+                            matchedTaskTitle = matchedTask?.title
+                            activityKind = matchedTask.map(activityKind(for:)) ?? inferredKind(for: activeCommand)
                         } else if snapshot?.isRunning == true {
                             activityLabel = "Shell ready"
                             tone = .idle
+                            matchedTaskTitle = nil
+                            activityKind = .ready
                         } else if let lastMessage = snapshot?.lastMessage, !lastMessage.isEmpty {
                             activityLabel = lastMessage
                             tone = .warning
+                            matchedTaskTitle = nil
+                            activityKind = .stopped
                         } else {
                             activityLabel = "Not started"
                             tone = .idle
+                            matchedTaskTitle = nil
+                            activityKind = .stopped
                         }
 
                         let shellLabel = (snapshot?.command ?? tab.command ?? ["/bin/zsh"])
@@ -286,10 +351,14 @@ struct TerminalRuntimePanelPresentation: Equatable, Sendable {
                             workspaceID: workspace.id,
                             workspaceName: workspace.name,
                             terminalTitle: tab.title,
+                            repositoryLabel: catalog?.repositoryName,
                             shellLabel: shellLabel,
                             directoryLabel: compactPathLabel(currentDirectory),
                             branchLabel: snapshot?.gitBranch,
                             activityLabel: activityLabel,
+                            matchedTaskTitle: matchedTaskTitle,
+                            activityKind: activityKind,
+                            recentCommands: Array((snapshot?.recentCommands ?? []).prefix(3)),
                             isRunning: snapshot?.isRunning ?? false,
                             isActiveWorkspace: workspace.id == layoutState.activeWorkspaceID,
                             tone: tone
@@ -301,12 +370,18 @@ struct TerminalRuntimePanelPresentation: Equatable, Sendable {
         let liveCount = entries.filter { $0.isRunning && $0.tone == .active }.count
         let readyCount = entries.filter { $0.isRunning && $0.tone != .active }.count
         let stoppedCount = entries.count - liveCount - readyCount
+        let knownTaskCount = entries.filter { $0.isRunning && $0.matchedTaskTitle != nil }.count
+        let dockerTaskCount = entries.filter { $0.isRunning && $0.activityKind == .dockerCompose }.count
+        let manualTaskCount = entries.filter { $0.isRunning && $0.activityKind == .manual }.count
 
         return TerminalRuntimePanelPresentation(
             entries: entries,
             liveCount: liveCount,
             readyCount: readyCount,
-            stoppedCount: stoppedCount
+            stoppedCount: stoppedCount,
+            knownTaskCount: knownTaskCount,
+            dockerTaskCount: dockerTaskCount,
+            manualTaskCount: manualTaskCount
         )
     }
 
@@ -360,5 +435,61 @@ struct TerminalRuntimePanelPresentation: Equatable, Sendable {
         }
 
         return "\(parent)/\(last)"
+    }
+
+    private static func activityKind(for task: DeveloperTask) -> TerminalRuntimeActivityKind {
+        switch task.source {
+        case .packageScript:
+            return .packageScript
+        case .dockerCompose:
+            return .dockerCompose
+        case .makeTarget:
+            return .make
+        case .swiftPackage:
+            return .swiftPackage
+        case .xcodeWorkspace:
+            return .xcode
+        }
+    }
+
+    private static func inferredKind(for rawCommand: String) -> TerminalRuntimeActivityKind {
+        let command = canonicalCommand(rawCommand)
+        if command.hasPrefix("docker compose ") || command.hasPrefix("docker-compose ") {
+            return .dockerCompose
+        }
+        if command.hasPrefix("make ") {
+            return .make
+        }
+        if command.hasPrefix("swift ") {
+            return .swiftPackage
+        }
+        return .manual
+    }
+
+    private static func matchedTask(
+        for rawCommand: String,
+        catalog: DeveloperTerminalTaskCatalog?
+    ) -> DeveloperTask? {
+        guard let catalog else {
+            return nil
+        }
+
+        let command = canonicalCommand(rawCommand)
+        return catalog.tasks.first { canonicalCommand($0.command) == command }
+    }
+
+    private static func canonicalCommand(_ rawCommand: String) -> String {
+        var command = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        command = command.replacingOccurrences(
+            of: #"^(?:builtin\s+)?cd\s+.+?\s+&&\s+"#,
+            with: "",
+            options: .regularExpression
+        )
+        command = command.replacingOccurrences(
+            of: #"^(?:exec\s+)+"#,
+            with: "",
+            options: .regularExpression
+        )
+        return command.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

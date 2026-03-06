@@ -56,6 +56,7 @@ This repository now contains a working iterative implementation of the architect
 - Terminal transcript UX:
   - searchable AppKit-backed scrollback view with text selection and copy support
   - larger scrollback retention (5,000 lines per pane)
+  - pane chrome for find/copy/paste plus recent-command rerun and interrupt controls
 - `floui-cli` wrapper that emits structured `task.started/task.done` JSON events
 - Local `xcodebuild` test scripts aligned to TDD flow
 - Release hardening scaffolding:
@@ -76,7 +77,8 @@ This repository now contains a working iterative implementation of the architect
 - Browser layouts also auto-apply on workspace activation, scope permission checks to the browsers actually used in the workspace, and focus the active browser tab when a matching URL is present.
 - The shell now highlights the focused mini-window, exposes workspace activity summaries, and keeps pill telemetry visible with progress and alert counts.
 - Terminal tabs can declare a `workingDirectory`; the sidebar task runner uses that context to discover scripts/containers and dispatch quick-run commands back into the matching shell.
-- Terminal panes expose searchable selectable scrollback with a one-click copy action, but this is still not a full Warp/VS Code-class terminal emulator yet.
+- The live runtime rail now classifies matched repo tasks versus docker/manual commands and exposes stop/rerun actions per pane.
+- Terminal panes expose searchable selectable scrollback, copy/paste helpers, recent command chips, and interrupt/rerun actions, but this is still not a full Warp/VS Code-class terminal emulator yet.
 
 ## Project Layout
 
