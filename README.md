@@ -47,6 +47,10 @@ This repository now contains a working iterative implementation of the architect
   - restored terminal panes stay suspended until explicitly started, so persisted commands are not rerun automatically
 - `floui-cli` wrapper that emits structured `task.started/task.done` JSON events
 - Local `xcodebuild` test scripts aligned to TDD flow
+- Release hardening scaffolding:
+  - deterministic `.app` bundle generation around the SwiftPM release binary
+  - Developer ID signing / notarization / artifact packaging scripts
+  - Sparkle-compatible bundle metadata + appcast generation hook
 
 ## Interaction Notes
 
@@ -101,6 +105,7 @@ swift run floui-cli run claude-code --workspace default --pane pill-claude -- /u
 ./scripts/test-integration
 ./scripts/test-e2e-hybrid
 ./scripts/test-e2e-real
+./scripts/test-release-tooling
 ```
 
 `test-e2e-real` requires explicit opt-in:
@@ -114,4 +119,5 @@ FLOUI_REAL_E2E=1 ./scripts/test-e2e-real
 - Ghostty uses a concrete runtime adapter that loads `libghostty` dynamically and calls a pinned symbol contract (`ghostty_floui_*`).
 - Safari support is launch/tile/script oriented.
 - Chrome/Brave support CDP target lifecycle ingestion via `URLSessionCDPClient` + `ChromiumDevToolsAdapter`.
-- Direct notarized distribution and in-app update wiring are planned in hardening/release phase.
+- Direct notarized distribution is now scaffolded via the release scripts documented in [docs/release.md](/Users/lukaspribik/Documents/Work/Floui/docs/release.md).
+- Full in-app updater embedding still needs the final updater library/runtime integration on top of the generated bundle flow.

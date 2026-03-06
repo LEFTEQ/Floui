@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+CONFIG_FILE="$TEMP_DIR/release.env"
+OUTPUT_DIR="$TEMP_DIR/output"
+
+cat >"$CONFIG_FILE" <<'EOF'
+FLOUI_RELEASE_VERSION=0.1.0
+FLOUI_BUILD_NUMBER=100
+FLOUI_BUNDLE_ID=com.floui.test
+FLOUI_APP_NAME=Floui
+FLOUI_EXECUTABLE_NAME=FlouiApp
+FLOUI_MINIMUM_SYSTEM_VERSION=15.0
+FLOUI_APPCAST_URL=https://downloads.example.com/floui/appcast.xml
+FLOUI_SUPUBLIC_ED_KEY=TEST_PUBLIC_KEY
+FLOUI_RELEASE_NOTES_URL=https://downloads.example.com/floui/releases/
+FLOUI_UPDATE_CHANNEL=test
+FLOUI_SU_ENABLE_AUTOMATIC_CHECKS=YES
+FLOUI_SU_AUTOMATICALLY_UPDATE=YES
+FLOUI_SU_ALLOWS_AUTOMATIC_UPDATES=YES
+FLOUI_SU_VERIFY_UPDATE_BEFORE_EXTRACTION=YES
+FLOUI_SU_REQUIRE_SIGNED_FEED=YES
+FLOUI_APPLE_EVENTS_USAGE_DESCRIPTION="Floui needs Automation access."
+EOF
+
+"$ROOT_DIR/scripts/build-release-bundle" --config "$CONFIG_FILE" --output "$OUTPUT_DIR"
+"$ROOT_DIR/scripts/package-release" --config "$CONFIG_FILE" --app "$OUTPUT_DIR/Floui.app"
+
+APP_PATH="$OUTPUT_DIR/Floui.app"
+PLIST_PATH="$APP_PATH/Contents/Info.plist"
+ZIP_PATH="$OUTPUT_DIR/Floui-0.1.0.zip"
+
+[[ -d "$APP_PATH" ]]
+[[ -x "$APP_PATH/Contents/MacOS/FlouiApp" ]]
+[[ -f "$PLIST_PATH" ]]
+[[ -f "$ZIP_PATH" ]]
+
+/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST_PATH" | grep -qx 'com.floui.test'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST_PATH" | grep -qx '0.1.0'
+/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST_PATH" | grep -qx '100'
+/usr/libexec/PlistBuddy -c 'Print :NSAppleEventsUsageDescription' "$PLIST_PATH" | grep -qx 'Floui needs Automation access.'
+/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$PLIST_PATH" | grep -qx 'https://downloads.example.com/floui/appcast.xml'
+/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$PLIST_PATH" | grep -qx 'TEST_PUBLIC_KEY'
+/usr/libexec/PlistBuddy -c 'Print :SUVerifyUpdateBeforeExtraction' "$PLIST_PATH" | grep -qx 'true'
+/usr/libexec/PlistBuddy -c 'Print :SURequireSignedFeed' "$PLIST_PATH" | grep -qx 'true'
+
+echo "Release tooling smoke test passed"

@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-common.sh"
+
+CONFIG_FILE="$ROOT_DIR/config/release/release.env"
+ARCHIVE_PATH=""
+APP_PATH=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --config)
+      CONFIG_FILE="$2"
+      shift 2
+      ;;
+    --archive)
+      ARCHIVE_PATH="$2"
+      shift 2
+      ;;
+    --app)
+      APP_PATH="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+load_release_env "$CONFIG_FILE"
+
+ensure_command xcrun
+require_var FLOUI_NOTARY_PROFILE
+
+if [[ -z "$APP_PATH" ]]; then
+  APP_PATH="$(release_app_path "$(default_release_output_dir)")"
+fi
+
+if [[ -z "$ARCHIVE_PATH" ]]; then
+  APP_DIR="$(dirname "$APP_PATH")"
+  ARCHIVE_PATH="$APP_DIR/$(resolve_app_name)-$(resolve_release_version).zip"
+fi
+
+if [[ ! -f "$ARCHIVE_PATH" ]]; then
+  echo "Archive not found: $ARCHIVE_PATH" >&2
+  exit 1
+fi
+
+xcrun notarytool submit "$ARCHIVE_PATH" --keychain-profile "$FLOUI_NOTARY_PROFILE" --wait
+
+if [[ -d "$APP_PATH" ]]; then
+  xcrun stapler staple "$APP_PATH"
+fi
+
+case "$ARCHIVE_PATH" in
+  *.dmg)
+    xcrun stapler staple "$ARCHIVE_PATH"
+    ;;
+  *.zip)
+    if [[ -d "$APP_PATH" ]]; then
+      ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
+    fi
+    ;;
+esac
+
+print_release_summary "$APP_PATH" "$ARCHIVE_PATH"

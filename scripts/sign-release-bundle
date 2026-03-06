@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-common.sh"
+
+CONFIG_FILE="$ROOT_DIR/config/release/release.env"
+APP_PATH=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --config)
+      CONFIG_FILE="$2"
+      shift 2
+      ;;
+    --app)
+      APP_PATH="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+load_release_env "$CONFIG_FILE"
+
+ensure_command codesign
+require_var FLOUI_CODESIGN_IDENTITY
+
+if [[ -z "$APP_PATH" ]]; then
+  APP_PATH="$(release_app_path "$(default_release_output_dir)")"
+fi
+
+if [[ ! -d "$APP_PATH" ]]; then
+  echo "App bundle not found: $APP_PATH" >&2
+  exit 1
+fi
+
+codesign \
+  --force \
+  --options runtime \
+  --timestamp \
+  --entitlements "$ROOT_DIR/config/release/Floui.entitlements" \
+  --sign "$FLOUI_CODESIGN_IDENTITY" \
+  "$APP_PATH"
+
+codesign --verify --strict --verbose=2 "$APP_PATH"
+print_release_summary "$APP_PATH"

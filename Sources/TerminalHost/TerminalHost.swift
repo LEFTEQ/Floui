@@ -92,24 +92,38 @@ public actor ExternalTerminalEngine: TerminalEngine {
         continuations[sessionID] = continuationBox
         streams[sessionID] = stream
 
-        outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else {
                 return
             }
-            Task { await self?.emitOutput(data, for: sessionID) }
+            Self.yieldOutput(data, to: continuationBox)
         }
 
-        errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else {
                 return
             }
-            Task { await self?.emitOutput(data, for: sessionID) }
+            Self.yieldOutput(data, to: continuationBox)
         }
 
         process.terminationHandler = { [weak self] terminatedProcess in
-            Task { await self?.handleProcessTermination(sessionID: sessionID, status: terminatedProcess.terminationStatus) }
+            outputPipe.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+
+            let remainingStdout = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            if !remainingStdout.isEmpty {
+                Self.yieldOutput(remainingStdout, to: continuationBox)
+            }
+
+            let remainingStderr = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            if !remainingStderr.isEmpty {
+                Self.yieldOutput(remainingStderr, to: continuationBox)
+            }
+
+            continuationBox.yield(.processExited(terminatedProcess.terminationStatus))
+            Task { await self?.cleanupSession(sessionID: sessionID, finishStream: true) }
         }
 
         do {
@@ -158,37 +172,16 @@ public actor ExternalTerminalEngine: TerminalEngine {
         }
     }
 
-    private func emitOutput(_ data: Data, for sessionID: TerminalSessionID) {
+    private static func yieldOutput(_ data: Data, to continuation: AsyncStream<TerminalEvent>.Continuation) {
         if let text = String(data: data, encoding: .utf8), !text.isEmpty {
-            emit(.output(text), for: sessionID)
+            continuation.yield(.output(text))
             return
         }
 
         let decoded = data.map { String(format: "%02X", $0) }.joined(separator: " ")
         if !decoded.isEmpty {
-            emit(.status("external-output-bytes: \(decoded)"), for: sessionID)
+            continuation.yield(.status("external-output-bytes: \(decoded)"))
         }
-    }
-
-    private func handleProcessTermination(sessionID: TerminalSessionID, status: Int32) {
-        guard let session = sessions[sessionID] else {
-            return
-        }
-
-        session.stdout.readabilityHandler = nil
-        session.stderr.readabilityHandler = nil
-
-        let remainingStdout = session.stdout.readDataToEndOfFile()
-        if !remainingStdout.isEmpty {
-            emitOutput(remainingStdout, for: sessionID)
-        }
-
-        let remainingStderr = session.stderr.readDataToEndOfFile()
-        if !remainingStderr.isEmpty {
-            emitOutput(remainingStderr, for: sessionID)
-        }
-
-        emit(.processExited(status), for: sessionID)
     }
 
     private func cleanupSession(sessionID: TerminalSessionID, finishStream: Bool) {

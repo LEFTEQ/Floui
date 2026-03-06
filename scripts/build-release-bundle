@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-common.sh"
+
+CONFIG_FILE="$ROOT_DIR/config/release/release.env"
+OUTPUT_DIR=""
+SKIP_BUILD=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --config)
+      CONFIG_FILE="$2"
+      shift 2
+      ;;
+    --output)
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --skip-build)
+      SKIP_BUILD=1
+      shift
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+load_release_env "$CONFIG_FILE"
+
+ensure_command swift
+
+RELEASE_VERSION="$(resolve_release_version)"
+BUILD_NUMBER="$(resolve_build_number)"
+OUTPUT_DIR="$(resolve_release_output_dir "$OUTPUT_DIR")"
+APP_PATH="$(release_app_path "$OUTPUT_DIR")"
+EXECUTABLE_NAME="$(resolve_executable_name)"
+
+if [[ "$SKIP_BUILD" != "1" ]]; then
+  (
+    cd "$ROOT_DIR"
+    swift build -c release --product "$EXECUTABLE_NAME"
+  )
+fi
+
+RELEASE_BINARY_PATH="$(resolve_release_binary_path)"
+
+rm -rf "$APP_PATH"
+mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
+cp "$RELEASE_BINARY_PATH" "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME"
+chmod 755 "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME"
+write_info_plist "$APP_PATH/Contents/Info.plist" "$RELEASE_VERSION" "$BUILD_NUMBER"
+printf 'APPL????' >"$APP_PATH/Contents/PkgInfo"
+
+if [[ -n "${FLOUI_APP_ICON_PATH:-}" ]]; then
+  cp "$FLOUI_APP_ICON_PATH" "$APP_PATH/Contents/Resources/$(resolve_app_name).icns"
+fi
+
+if [[ -z "${FLOUI_APPCAST_URL:-}" || -z "${FLOUI_SUPUBLIC_ED_KEY:-}" ]]; then
+  echo "Release bundle created without full updater metadata. Set FLOUI_APPCAST_URL and FLOUI_SUPUBLIC_ED_KEY to enable Sparkle-compatible update keys." >&2
+fi
+
+print_release_summary "$APP_PATH"
