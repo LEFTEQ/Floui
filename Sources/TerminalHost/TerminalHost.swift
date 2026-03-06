@@ -355,6 +355,7 @@ public struct TerminalPaneRuntimeState: Equatable, Sendable {
     public var paneID: String
     public var workspaceID: String
     public var command: [String]
+    public var workingDirectory: String?
     public var isRunning: Bool
     public var lastMessage: String
     public var outputLines: [String]
@@ -364,6 +365,7 @@ public struct TerminalPaneRuntimeState: Equatable, Sendable {
         paneID: String,
         workspaceID: String,
         command: [String],
+        workingDirectory: String? = nil,
         isRunning: Bool,
         lastMessage: String,
         outputLines: [String] = [],
@@ -372,6 +374,7 @@ public struct TerminalPaneRuntimeState: Equatable, Sendable {
         self.paneID = paneID
         self.workspaceID = workspaceID
         self.command = command
+        self.workingDirectory = workingDirectory
         self.isRunning = isRunning
         self.lastMessage = lastMessage
         self.outputLines = outputLines
@@ -400,6 +403,7 @@ public actor TerminalWorkspaceRuntime {
             paneID: config.paneID,
             workspaceID: config.workspaceID,
             command: config.shellCommand,
+            workingDirectory: config.workingDirectory,
             isRunning: true,
             lastMessage: "Session started"
         )

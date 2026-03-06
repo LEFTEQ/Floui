@@ -143,7 +143,13 @@ func restorePlannerNeverAutoRuns() {
                     WorkspaceMiniWindowManifest(
                         id: "m1",
                         tabs: [
-                            WorkspaceTabManifest(id: "term-1", title: "A", type: .terminal, command: ["/bin/zsh"]),
+                            WorkspaceTabManifest(
+                                id: "term-1",
+                                title: "A",
+                                type: .terminal,
+                                command: ["/bin/zsh"],
+                                workingDirectory: "/repo/app"
+                            ),
                             WorkspaceTabManifest(id: "browser-1", title: "B", type: .browser, browser: .chrome, url: "https://example.com"),
                         ]
                     )
@@ -161,6 +167,7 @@ func restorePlannerNeverAutoRuns() {
     #expect(plan.panes.count == 2)
     #expect(plan.panes.allSatisfy { $0.autoRun == false })
     #expect(plan.panes.first(where: { $0.paneID == "term-1" })?.command == ["/usr/bin/env", "echo", "hello"])
+    #expect(plan.panes.first(where: { $0.paneID == "term-1" })?.workingDirectory == "/repo/app")
 }
 
 @Test("Last session metadata captures terminal commands from layout state")

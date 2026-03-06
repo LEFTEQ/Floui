@@ -28,6 +28,10 @@
   - Reusable presentation helpers for the SwiftUI shell.
   - Includes `WorkspacePresentationSummary`, `FixedPillPresentation`, and `RelativeActivityFormatter` so sidebar/header/pill views share deterministic formatting logic instead of duplicating it in view bodies.
 
+- `Sources/FlouiApp/GlobalTaskRunner.swift`
+  - Reusable repository-discovery and quick-run orchestration for dev workflows.
+  - Includes `GlobalTaskDiscoveryService`, `GlobalTaskRunnerViewModel`, terminal-context modeling, package-script/docker/make/swift/Xcode detection, and deterministic quick-run command dispatch assumptions.
+
 - `Sources/BrowserOrchestrator/BrowserOrchestrator.swift`
   - Browser layout planning/orchestration and concrete integration adapters.
   - Includes `ChromiumDevToolsAdapter` target lifecycle cache and `URLSessionCDPClient`.
@@ -50,3 +54,4 @@
 - Browser automation logic should remain in adapters; keep workspace reducers pure and deterministic.
 - CDP event ingestion should map through `DevToolsStatusEventMapper` before touching pill store state.
 - UI chrome should derive counts, tone, and relative-time labels from `AppShellPresentation.swift`; avoid re-implementing workspace/pill formatting inside views.
+- Repo/task discovery should go through `GlobalTaskRunner.swift`; avoid ad-hoc filesystem parsing in SwiftUI views.

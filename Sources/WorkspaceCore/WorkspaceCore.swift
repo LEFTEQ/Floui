@@ -13,6 +13,7 @@ public struct WorkspaceTabManifest: Codable, Hashable, Sendable {
     public var title: String
     public var type: WorkspacePaneType
     public var command: [String]?
+    public var workingDirectory: String?
     public var browser: BrowserKind?
     public var url: String?
 
@@ -21,6 +22,7 @@ public struct WorkspaceTabManifest: Codable, Hashable, Sendable {
         title: String,
         type: WorkspacePaneType,
         command: [String]? = nil,
+        workingDirectory: String? = nil,
         browser: BrowserKind? = nil,
         url: String? = nil
     ) {
@@ -28,6 +30,7 @@ public struct WorkspaceTabManifest: Codable, Hashable, Sendable {
         self.title = title
         self.type = type
         self.command = command
+        self.workingDirectory = workingDirectory
         self.browser = browser
         self.url = url
     }
@@ -386,12 +389,20 @@ public struct RestorePanePlan: Equatable, Sendable {
     public var paneID: String
     public var type: WorkspacePaneType
     public var command: [String]?
+    public var workingDirectory: String?
     public var autoRun: Bool
 
-    public init(paneID: String, type: WorkspacePaneType, command: [String]?, autoRun: Bool) {
+    public init(
+        paneID: String,
+        type: WorkspacePaneType,
+        command: [String]?,
+        workingDirectory: String? = nil,
+        autoRun: Bool
+    ) {
         self.paneID = paneID
         self.type = type
         self.command = command
+        self.workingDirectory = workingDirectory
         self.autoRun = autoRun
     }
 }
@@ -419,6 +430,7 @@ public struct WorkspaceRestorePlanner {
                     paneID: tab.id,
                     type: tab.type,
                     command: command,
+                    workingDirectory: tab.workingDirectory,
                     autoRun: false
                 )
             }

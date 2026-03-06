@@ -160,7 +160,13 @@ struct FlouiAppMain: App {
                             id: "win-1",
                             activeTabID: "term-1",
                             tabs: [
-                                WorkspaceTabManifest(id: "term-1", title: "Terminal", type: .terminal, command: ["/bin/zsh"]),
+                                WorkspaceTabManifest(
+                                    id: "term-1",
+                                    title: "Terminal",
+                                    type: .terminal,
+                                    command: ["/bin/zsh"],
+                                    workingDirectory: Self.sampleWorkingDirectory
+                                ),
                                 WorkspaceTabManifest(id: "chrome-1", title: "Chrome Dev", type: .browser, browser: .chrome, url: "https://github.com"),
                             ]
                         )
@@ -200,6 +206,15 @@ struct FlouiAppMain: App {
             .appendingPathComponent("Floui", isDirectory: true)
             .appendingPathComponent("status-events.jsonl")
     }
+
+    private static var sampleWorkingDirectory: String {
+        let currentDirectory = FileManager.default.currentDirectoryPath
+        if currentDirectory != "/", FileManager.default.fileExists(atPath: currentDirectory) {
+            return currentDirectory
+        }
+
+        return NSHomeDirectory()
+    }
 }
 
 struct AppShellView: View {
@@ -214,6 +229,7 @@ struct AppShellView: View {
     @StateObject private var terminalRuntime: TerminalRuntimeViewModel
     @StateObject private var browserAutomation: BrowserAutomationController
     @StateObject private var automationCoordinator: WorkspaceAutomationCoordinator
+    @StateObject private var globalTaskRunner: GlobalTaskRunnerViewModel
 
     init(
         layoutState: Binding<WorkspaceLayoutState>,
@@ -232,8 +248,10 @@ struct AppShellView: View {
 
         let terminalRuntime = TerminalRuntimeViewModel()
         let browserAutomation = BrowserAutomationController()
+        let globalTaskRunner = GlobalTaskRunnerViewModel()
         _terminalRuntime = StateObject(wrappedValue: terminalRuntime)
         _browserAutomation = StateObject(wrappedValue: browserAutomation)
+        _globalTaskRunner = StateObject(wrappedValue: globalTaskRunner)
         _automationCoordinator = StateObject(
             wrappedValue: WorkspaceAutomationCoordinator(
                 terminalRuntime: terminalRuntime,
@@ -303,6 +321,9 @@ struct AppShellView: View {
                 forceBrowserApply: false
             )
         }
+        .task(id: taskRunnerKey) {
+            globalTaskRunner.refresh(layoutState: layoutState)
+        }
     }
 
     private var workspaceSidebar: some View {
@@ -336,6 +357,13 @@ struct AppShellView: View {
                         .buttonStyle(.plain)
                     }
                 }
+
+                GlobalTaskRunnerSectionView(
+                    snapshot: globalTaskRunner.snapshot,
+                    activeWorkspaceID: layoutState.activeWorkspaceID,
+                    terminalRuntime: terminalRuntime,
+                    onRunTask: runTask
+                )
 
                 Spacer(minLength: 0)
             }
@@ -491,6 +519,32 @@ struct AppShellView: View {
         return "\(workspaceKey)|\(permissionKey)|restored:\(didRestorePersistedSession)"
     }
 
+    private var taskRunnerKey: String {
+        layoutState.workspaceOrder
+            .compactMap { layoutState.workspaces[$0] }
+            .flatMap { workspace in
+                workspace.columns
+                    .flatMap(\.windows)
+                    .flatMap(\.tabs)
+                    .compactMap { tab -> String? in
+                        guard tab.type == .terminal else {
+                            return nil
+                        }
+
+                        let command = (tab.command ?? []).joined(separator: " ")
+                        return [
+                            workspace.id,
+                            tab.id,
+                            tab.title,
+                            tab.workingDirectory ?? "",
+                            command,
+                        ]
+                        .joined(separator: "|")
+                    }
+            }
+            .joined(separator: "\n")
+    }
+
     private var shortcutHandlers: some View {
         VStack(spacing: 0) {
             Button("Next Tab") {
@@ -549,6 +603,14 @@ struct AppShellView: View {
             permissionState: permissionState,
             restoredSession: didRestorePersistedSession,
             forceBrowserApply: force
+        )
+    }
+
+    private func runTask(_ task: DeveloperTask, _ catalog: DeveloperTerminalTaskCatalog) {
+        terminalRuntime.runTask(
+            task.command,
+            in: catalog.context,
+            executionDirectory: catalog.executionDirectory
         )
     }
 
@@ -760,6 +822,196 @@ struct WorkspaceSidebarCardView: View {
         case .critical:
             return Color(red: 0.96, green: 0.37, blue: 0.33)
         }
+    }
+}
+
+struct GlobalTaskRunnerSectionView: View {
+    let snapshot: GlobalTaskRunnerSnapshot
+    let activeWorkspaceID: String?
+    @ObservedObject var terminalRuntime: TerminalRuntimeViewModel
+    let onRunTask: (DeveloperTask, DeveloperTerminalTaskCatalog) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+                .overlay(Color.white.opacity(0.08))
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Global Task Runner")
+                    .font(.headline)
+                Text(snapshot.catalogs.isEmpty ? "No project terminals detected" : "Repo-aware scripts and Docker tasks across open terminals.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if snapshot.catalogs.isEmpty {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.white.opacity(0.04))
+                    .overlay(alignment: .topLeading) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Add terminal tabs with a `workingDirectory` to populate quick-run tasks.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 8) {
+                                ShellStatBadge(value: 0, label: "repos", tone: .idle)
+                                ShellStatBadge(value: 0, label: "tasks", tone: .idle)
+                            }
+                        }
+                        .padding(14)
+                    }
+                    .frame(height: 120)
+            } else {
+                HStack(spacing: 8) {
+                    ShellStatBadge(value: snapshot.terminalCount, label: "repos", tone: .active)
+                    ShellStatBadge(value: snapshot.totalTaskCount, label: "tasks", tone: .idle)
+                }
+
+                ForEach(snapshot.catalogs) { catalog in
+                    TerminalTaskCatalogCardView(
+                        catalog: catalog,
+                        isActiveWorkspace: catalog.context.workspaceID == activeWorkspaceID,
+                        runtimeSnapshot: terminalRuntime.snapshotsByPaneID[catalog.context.paneID],
+                        requiresManualStart: terminalRuntime.requiresManualStart(paneID: catalog.context.paneID),
+                        onRunTask: { task in
+                            onRunTask(task, catalog)
+                        }
+                    )
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+}
+
+struct TerminalTaskCatalogCardView: View {
+    let catalog: DeveloperTerminalTaskCatalog
+    let isActiveWorkspace: Bool
+    let runtimeSnapshot: TerminalPaneRuntimeState?
+    let requiresManualStart: Bool
+    let onRunTask: (DeveloperTask) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(catalog.repositoryName)
+                        .font(.headline)
+                    Text("\(catalog.context.workspaceName) · \(catalog.context.terminalTitle)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(catalog.relativeDirectoryLabel == "repo root" ? catalog.repositoryRoot : "\(catalog.repositoryRoot) / \(catalog.relativeDirectoryLabel)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 6) {
+                    Text(runtimeStatusLabel)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(runtimeStatusColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(runtimeStatusColor.opacity(0.14))
+                        .clipShape(Capsule())
+
+                    if isActiveWorkspace {
+                        Text("active")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(catalog.capabilities, id: \.self) { capability in
+                        Text(capability.label)
+                            .font(.caption2.monospaced())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(Color.white.opacity(0.07))
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(catalog.tasks.prefix(6))) { task in
+                    Button {
+                        onRunTask(task)
+                    } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(task.title)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text(task.command)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                if !task.detail.isEmpty {
+                                    Text(task.detail)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+
+                            Spacer(minLength: 8)
+
+                            Image(systemName: "play.circle.fill")
+                                .foregroundStyle(Color.cyan)
+                        }
+                        .padding(10)
+                        .background(Color.white.opacity(0.04))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if catalog.tasks.count > 6 {
+                    Text("+\(catalog.tasks.count - 6) more detected tasks")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(isActiveWorkspace ? Color.cyan.opacity(0.24) : Color.white.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private var runtimeStatusLabel: String {
+        if requiresManualStart {
+            return "manual"
+        }
+
+        if runtimeSnapshot?.isRunning == true {
+            return "live"
+        }
+
+        return "idle"
+    }
+
+    private var runtimeStatusColor: Color {
+        if requiresManualStart {
+            return .orange
+        }
+
+        if runtimeSnapshot?.isRunning == true {
+            return .green
+        }
+
+        return .secondary
     }
 }
 
@@ -1071,6 +1323,15 @@ struct TerminalPaneView: View {
                     .lineLimit(1)
             }
 
+            if let workingDirectory = snapshot?.workingDirectory ?? tab.workingDirectory,
+               !workingDirectory.isEmpty
+            {
+                Text(workingDirectory)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(snapshot?.outputLines.suffix(120) ?? [], id: \.self) { line in
@@ -1203,6 +1464,7 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
     private struct PreparedTerminalConfig: Sendable {
         var workspaceID: String
         var command: [String]
+        var workingDirectory: String?
     }
 
     @Published private(set) var snapshotsByPaneID: [String: TerminalPaneRuntimeState] = [:]
@@ -1234,7 +1496,8 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
         activePaneIDs.insert(tab.id)
         preparedConfigsByPaneID[tab.id] = PreparedTerminalConfig(
             workspaceID: workspaceID,
-            command: resolvedCommand(for: tab.id, fallback: tab.command)
+            command: resolvedCommand(for: tab.id, fallback: tab.command),
+            workingDirectory: resolvedWorkingDirectory(for: tab.id, fallback: tab.workingDirectory)
         )
         surfaceIDsByPaneID[tab.id] = surfaceID
 
@@ -1251,7 +1514,8 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
         activePaneIDs.insert(tab.id)
         preparedConfigsByPaneID[tab.id] = PreparedTerminalConfig(
             workspaceID: workspaceID,
-            command: resolvedCommand(for: tab.id, fallback: tab.command)
+            command: resolvedCommand(for: tab.id, fallback: tab.command),
+            workingDirectory: resolvedWorkingDirectory(for: tab.id, fallback: tab.workingDirectory)
         )
         surfaceIDsByPaneID[tab.id] = surfaceID
         suspendedPaneIDs.remove(tab.id)
@@ -1267,13 +1531,38 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
         }
     }
 
+    func runTask(_ taskCommand: String, in context: DeveloperTerminalTaskContext, executionDirectory: String) {
+        let trimmedCommand = taskCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCommand.isEmpty else {
+            return
+        }
+
+        activePaneIDs.insert(context.paneID)
+        preparedConfigsByPaneID[context.paneID] = PreparedTerminalConfig(
+            workspaceID: context.workspaceID,
+            command: resolvedCommand(for: context.paneID, fallback: context.shellCommand),
+            workingDirectory: context.workingDirectory
+        )
+        suspendedPaneIDs.remove(context.paneID)
+
+        Task { [weak self] in
+            await self?.startAndDispatchTask(
+                paneID: context.paneID,
+                workspaceID: context.workspaceID,
+                taskCommand: trimmedCommand,
+                executionDirectory: executionDirectory
+            )
+        }
+    }
+
     func primeRestorePlans(_ plans: [WorkspaceRestorePlan]) {
         for plan in plans {
             for pane in plan.panes where pane.type == .terminal {
                 let command = resolvedCommand(for: pane.paneID, fallback: pane.command)
                 preparedConfigsByPaneID[pane.paneID] = PreparedTerminalConfig(
                     workspaceID: plan.workspaceID,
-                    command: command
+                    command: command,
+                    workingDirectory: pane.workingDirectory
                 )
 
                 guard pane.autoRun == false else {
@@ -1285,6 +1574,7 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
                     paneID: pane.paneID,
                     workspaceID: plan.workspaceID,
                     command: command,
+                    workingDirectory: pane.workingDirectory,
                     isRunning: false,
                     lastMessage: "Restored. Command not auto-run.",
                     outputLines: []
@@ -1297,7 +1587,8 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
         for tab in workspace.columns.flatMap(\.windows).flatMap(\.tabs) where tab.type == .terminal {
             preparedConfigsByPaneID[tab.id] = PreparedTerminalConfig(
                 workspaceID: workspace.id,
-                command: resolvedCommand(for: tab.id, fallback: tab.command)
+                command: resolvedCommand(for: tab.id, fallback: tab.command),
+                workingDirectory: resolvedWorkingDirectory(for: tab.id, fallback: tab.workingDirectory)
             )
         }
     }
@@ -1359,7 +1650,8 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
         let config = TerminalSessionConfig(
             workspaceID: prepared.workspaceID,
             paneID: paneID,
-            shellCommand: prepared.command
+            shellCommand: prepared.command,
+            workingDirectory: prepared.workingDirectory
         )
 
         do {
@@ -1375,9 +1667,45 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
                 paneID: paneID,
                 workspaceID: prepared.workspaceID,
                 command: prepared.command,
+                workingDirectory: prepared.workingDirectory,
                 isRunning: false,
                 lastMessage: "Terminal start failed: \(error.localizedDescription)",
                 outputLines: []
+            )
+        }
+    }
+
+    private func startAndDispatchTask(
+        paneID: String,
+        workspaceID: String,
+        taskCommand: String,
+        executionDirectory: String
+    ) async {
+        await ensureSessionStarted(for: paneID)
+
+        do {
+            try await runtime.sendInput(
+                paneID: paneID,
+                input: Self.makeShellDispatchCommand(
+                    taskCommand,
+                    executionDirectory: executionDirectory
+                )
+            )
+
+            if var snapshot = snapshotsByPaneID[paneID] {
+                snapshot.lastMessage = "Queued: \(taskCommand)"
+                snapshotsByPaneID[paneID] = snapshot
+            }
+        } catch {
+            let prepared = preparedConfigsByPaneID[paneID]
+            snapshotsByPaneID[paneID] = TerminalPaneRuntimeState(
+                paneID: paneID,
+                workspaceID: workspaceID,
+                command: prepared?.command ?? ["/bin/zsh"],
+                workingDirectory: prepared?.workingDirectory,
+                isRunning: false,
+                lastMessage: "Quick run failed: \(error.localizedDescription)",
+                outputLines: snapshotsByPaneID[paneID]?.outputLines ?? []
             )
         }
     }
@@ -1400,6 +1728,31 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
         }
 
         return ["/bin/zsh"]
+    }
+
+    private func resolvedWorkingDirectory(for paneID: String, fallback: String?) -> String? {
+        if let prepared = preparedConfigsByPaneID[paneID] {
+            return prepared.workingDirectory
+        }
+
+        guard let fallback, !fallback.isEmpty else {
+            return nil
+        }
+
+        return fallback
+    }
+
+    private static func makeShellDispatchCommand(_ command: String, executionDirectory: String) -> String {
+        let trimmedDirectory = executionDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedDirectory.isEmpty else {
+            return "\(command)\n"
+        }
+
+        return "cd \(shellEscape(trimmedDirectory)) && \(command)\n"
+    }
+
+    private static func shellEscape(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
 

@@ -54,6 +54,7 @@ let package = Package(
                 "TerminalHost",
                 "BrowserOrchestrator",
                 "Permissions",
+                .product(name: "Yams", package: "Yams"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/FlouiApp"

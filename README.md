@@ -48,6 +48,7 @@ This repository now contains a working iterative implementation of the architect
 - App-shell presentation:
   - card-based workspace sidebar with per-workspace activity summaries
   - workspace cycling/focus reducer actions and tested presentation helpers for pill/workspace telemetry
+  - global task runner sidebar for repo-aware package scripts, Docker Compose flows, Make targets, SwiftPM commands, and Xcode launch actions across terminal directories
 - `floui-cli` wrapper that emits structured `task.started/task.done` JSON events
 - Local `xcodebuild` test scripts aligned to TDD flow
 - Release hardening scaffolding:
@@ -66,6 +67,7 @@ This repository now contains a working iterative implementation of the architect
 - Browser orchestration can be triggered from the fixed-pill rail using `Apply Layout`; failures surface recovery steps in-app.
 - Browser layouts also auto-apply on workspace activation, scope permission checks to the browsers actually used in the workspace, and focus the active browser tab when a matching URL is present.
 - The shell now highlights the focused mini-window, exposes workspace activity summaries, and keeps pill telemetry visible with progress and alert counts.
+- Terminal tabs can declare a `workingDirectory`; the sidebar task runner uses that context to discover scripts/containers and dispatch quick-run commands back into the matching shell.
 
 ## Project Layout
 

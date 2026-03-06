@@ -7,6 +7,7 @@ import WorkspaceCore
 actor AppMockTerminalEngine: TerminalEngine {
     private(set) var startedConfigs: [TerminalSessionConfig] = []
     private(set) var attachedSurfaces: [(TerminalSessionID, String)] = []
+    private(set) var sentInputs: [(TerminalSessionID, String)] = []
     private var streams: [TerminalSessionID: AsyncStream<TerminalEvent>] = [:]
 
     func startSession(config: TerminalSessionConfig) async throws -> TerminalSessionID {
@@ -22,7 +23,9 @@ actor AppMockTerminalEngine: TerminalEngine {
         attachedSurfaces.append((sessionID, surfaceID))
     }
 
-    func sendInput(sessionID _: TerminalSessionID, input _: String) async throws {}
+    func sendInput(sessionID: TerminalSessionID, input: String) async throws {
+        sentInputs.append((sessionID, input))
+    }
     func resize(sessionID _: TerminalSessionID, cols _: Int, rows _: Int) async throws {}
 
     func subscribeEvents(sessionID: TerminalSessionID) async -> AsyncStream<TerminalEvent> {
@@ -30,6 +33,38 @@ actor AppMockTerminalEngine: TerminalEngine {
             continuation.finish()
         }
     }
+}
+
+@MainActor
+@Test("Quick-run tasks start shell sessions in the configured directory and dispatch repo-scoped commands")
+func quickRunTasksUseWorkingDirectoryAwareShellDispatch() async throws {
+    let engine = AppMockTerminalEngine()
+    let runtime = TerminalRuntimeViewModel(engine: engine)
+
+    let context = DeveloperTerminalTaskContext(
+        paneID: "term-1",
+        workspaceID: "w1",
+        workspaceName: "Workspace",
+        terminalTitle: "Web",
+        shellCommand: ["/bin/zsh"],
+        workingDirectory: "/Users/o'connor/project/app"
+    )
+
+    runtime.runTask(
+        "pnpm run dev",
+        in: context,
+        executionDirectory: "/Users/o'connor/project"
+    )
+
+    try await Task.sleep(nanoseconds: 125_000_000)
+
+    let started = await engine.startedConfigs
+    let inputs = await engine.sentInputs
+
+    #expect(started.count == 1)
+    #expect(started.first?.workingDirectory == "/Users/o'connor/project/app")
+    #expect(inputs.count == 1)
+    #expect(inputs.first?.1 == "cd '/Users/o'\\''connor/project' && pnpm run dev\n")
 }
 
 @MainActor
