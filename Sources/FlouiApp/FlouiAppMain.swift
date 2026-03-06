@@ -287,12 +287,13 @@ struct AppShellView: View {
                     fixedPillRail
                     workspaceCanvas
                 }
-                .background(.ultraThinMaterial)
+                .background(shellBackground)
             }
             .navigationSplitViewStyle(.balanced)
 
             shortcutHandlers
         }
+        .background(shellBackground.ignoresSafeArea())
         .task(id: automationTaskKey) {
             automationCoordinator.sync(
                 layoutState: layoutState,
@@ -305,27 +306,55 @@ struct AppShellView: View {
     }
 
     private var workspaceSidebar: some View {
-        List(selection: Binding(
-            get: { layoutState.activeWorkspaceID },
-            set: { newValue in
-                guard let id = newValue else { return }
-                WorkspaceLayoutReducer.reduce(state: &layoutState, action: .switchWorkspace(id))
-            }
-        )) {
-            ForEach(layoutState.workspaceOrder, id: \.self) { workspaceID in
-                Text(layoutState.workspaces[workspaceID]?.name ?? workspaceID)
-                    .tag(Optional(workspaceID))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Workspaces")
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                    Text("Horizontal canvases with live terminals, browsers, and pills.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.bottom, 4)
+
+                ForEach(layoutState.workspaceOrder, id: \.self) { workspaceID in
+                    if let workspace = layoutState.workspaces[workspaceID] {
+                        let summary = WorkspacePresentationSummary.build(
+                            workspace: workspace,
+                            pillStore: pillStore,
+                            activeWindowID: layoutState.activeWindowIDByWorkspace[workspaceID]
+                        )
+
+                        Button {
+                            switchWorkspace(workspaceID)
+                        } label: {
+                            WorkspaceSidebarCardView(
+                                summary: summary,
+                                isSelected: workspaceID == layoutState.activeWorkspaceID
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Spacer(minLength: 0)
             }
         }
-        .frame(minWidth: 240)
+        .padding(18)
+        .frame(minWidth: 290)
+        .background(sidebarBackground)
     }
 
     private var fixedPillRail: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Text("Fixed Pills")
-                    .font(.headline)
-                    .padding(.horizontal, 8)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Fixed Pills")
+                        .font(.headline)
+                    Text(activeWorkspaceSummary?.activityLabel ?? "No live workspace")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer(minLength: 8)
                 Button(browserAutomation.isApplying ? "Applying..." : "Apply Layout") {
                     applyBrowserLayout(force: true)
@@ -334,40 +363,93 @@ struct AppShellView: View {
                 .disabled(browserAutomation.isApplying || activeWorkspace == nil)
             }
 
+            if let summary = activeWorkspaceSummary {
+                HStack(spacing: 8) {
+                    ShellStatBadge(value: summary.fixedPillCount, label: "pills", tone: .idle)
+                    ShellStatBadge(value: summary.runningTaskCount, label: "live", tone: .active)
+                    ShellStatBadge(value: summary.alertCount, label: "alerts", tone: summary.tone)
+                }
+            }
+
             let pills = activeWorkspace?.fixedPills ?? []
-            ForEach(pills, id: \.id) { pill in
-                FixedPillView(pill: pill, state: pillStore.pillsByPaneID[pill.id])
+            if pills.isEmpty {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.white.opacity(0.04))
+                    .frame(height: 88)
+                    .overlay {
+                        Text("No fixed pills configured")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+            } else {
+                ForEach(pills, id: \.id) { pill in
+                    FixedPillView(pill: pill, state: pillStore.pillsByPaneID[pill.id])
+                }
             }
 
             Spacer(minLength: 0)
         }
-        .padding(12)
-        .frame(width: 260)
-        .background(Color.black.opacity(0.25))
+        .padding(16)
+        .frame(width: 310)
+        .background(pillRailBackground)
     }
 
     private var workspaceCanvas: some View {
-        ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: 16) {
-                ForEach(activeWorkspace?.columns ?? [], id: \.id) { column in
-                    VStack(spacing: 12) {
-                        ForEach(column.windows, id: \.id) { window in
-                            MiniWindowCard(
-                                workspaceID: currentWorkspaceID,
-                                window: window,
-                                terminalRuntime: terminalRuntime,
-                                onSelectTab: { windowID, tabID in
-                                    selectTab(windowID: windowID, tabID: tabID)
+        VStack(spacing: 0) {
+            if let _ = activeWorkspace, let summary = activeWorkspaceSummary {
+                WorkspaceCanvasHeaderView(
+                    summary: summary,
+                    restoredSession: didRestorePersistedSession,
+                    isApplyingLayout: browserAutomation.isApplying,
+                    onApplyLayout: { applyBrowserLayout(force: true) }
+                )
+                .padding(.horizontal, 20)
+                .padding(.vertical, 18)
+            }
+
+            ScrollView(.horizontal) {
+                if let activeWorkspace {
+                    HStack(alignment: .top, spacing: 18) {
+                        ForEach(Array(activeWorkspace.columns.enumerated()), id: \.element.id) { index, column in
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack {
+                                    Text("Column \(index + 1)")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Text("\(column.windows.count) windows")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
                                 }
-                            )
+
+                                ForEach(column.windows, id: \.id) { window in
+                                    MiniWindowCard(
+                                        workspaceID: currentWorkspaceID,
+                                        window: window,
+                                        isFocused: layoutState.activeWindowIDByWorkspace[currentWorkspaceID] == window.id,
+                                        terminalRuntime: terminalRuntime,
+                                        onFocusWindow: {
+                                            focusWindow(window.id)
+                                        },
+                                        onSelectTab: { windowID, tabID in
+                                            selectTab(windowID: windowID, tabID: tabID)
+                                        }
+                                    )
+                                }
+                            }
+                            .frame(width: column.width ?? 420)
                         }
                     }
-                    .frame(width: column.width ?? 420)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
+                } else {
+                    EmptyWorkspaceCanvasView()
+                        .padding(24)
                 }
             }
-            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .background(Color.black.opacity(0.18))
+        .background(canvasBackground)
     }
 
     private var activeWorkspace: WorkspaceManifest? {
@@ -379,6 +461,18 @@ struct AppShellView: View {
 
     private var currentWorkspaceID: String {
         layoutState.activeWorkspaceID ?? "default"
+    }
+
+    private var activeWorkspaceSummary: WorkspacePresentationSummary? {
+        guard let workspace = activeWorkspace else {
+            return nil
+        }
+
+        return WorkspacePresentationSummary.build(
+            workspace: workspace,
+            pillStore: pillStore,
+            activeWindowID: layoutState.activeWindowIDByWorkspace[workspace.id]
+        )
     }
 
     private var automationTaskKey: String {
@@ -408,9 +502,32 @@ struct AppShellView: View {
                 cycleTab(direction: .previous)
             }
             .keyboardShortcut("[", modifiers: [.command, .shift])
+
+            Button("Next Workspace") {
+                cycleWorkspace(direction: .next)
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+
+            Button("Previous Workspace") {
+                cycleWorkspace(direction: .previous)
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+
+            Button("Apply Browser Layout") {
+                applyBrowserLayout(force: true)
+            }
+            .keyboardShortcut("l", modifiers: [.command, .option])
         }
         .frame(width: 0, height: 0)
         .opacity(0.001)
+    }
+
+    private func switchWorkspace(_ workspaceID: String) {
+        WorkspaceLayoutReducer.reduce(state: &layoutState, action: .switchWorkspace(workspaceID))
+    }
+
+    private func focusWindow(_ windowID: String) {
+        WorkspaceLayoutReducer.reduce(state: &layoutState, action: .focusWindow(windowID))
     }
 
     private func selectTab(windowID: String, tabID: String) {
@@ -421,6 +538,10 @@ struct AppShellView: View {
         WorkspaceLayoutReducer.reduce(state: &layoutState, action: .cycleTab(direction: direction))
     }
 
+    private func cycleWorkspace(direction: WorkspaceCycleDirection) {
+        WorkspaceLayoutReducer.reduce(state: &layoutState, action: .cycleWorkspace(direction: direction))
+    }
+
     private func applyBrowserLayout(force: Bool) {
         automationCoordinator.sync(
             layoutState: layoutState,
@@ -429,6 +550,65 @@ struct AppShellView: View {
             restoredSession: didRestorePersistedSession,
             forceBrowserApply: force
         )
+    }
+
+    private var shellBackground: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(red: 0.07, green: 0.08, blue: 0.11),
+                Color(red: 0.11, green: 0.12, blue: 0.16),
+                Color(red: 0.06, green: 0.07, blue: 0.10),
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var sidebarBackground: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(red: 0.08, green: 0.10, blue: 0.14),
+                Color(red: 0.06, green: 0.07, blue: 0.10),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    private var pillRailBackground: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(red: 0.12, green: 0.09, blue: 0.10),
+                Color(red: 0.09, green: 0.08, blue: 0.12),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    private var canvasBackground: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.09, green: 0.10, blue: 0.14),
+                    Color(red: 0.05, green: 0.06, blue: 0.09),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            RoundedRectangle(cornerRadius: 32)
+                .fill(Color(red: 0.95, green: 0.50, blue: 0.28).opacity(0.06))
+                .frame(width: 420, height: 420)
+                .blur(radius: 80)
+                .offset(x: 320, y: -180)
+
+            RoundedRectangle(cornerRadius: 40)
+                .fill(Color(red: 0.25, green: 0.72, blue: 0.78).opacity(0.05))
+                .frame(width: 480, height: 320)
+                .blur(radius: 70)
+                .offset(x: -260, y: 160)
+        }
     }
 }
 
@@ -520,10 +700,200 @@ struct BrowserRecoveryBannerView: View {
     }
 }
 
+struct WorkspaceSidebarCardView: View {
+    let summary: WorkspacePresentationSummary
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(summary.title)
+                        .font(.headline)
+                    Text(summary.densityLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Circle()
+                    .fill(accentColor)
+                    .frame(width: 10, height: 10)
+            }
+
+            HStack(spacing: 8) {
+                ShellStatBadge(value: summary.terminalCount, label: "term", tone: .active)
+                ShellStatBadge(value: summary.browserCount, label: "web", tone: .idle)
+                ShellStatBadge(value: summary.alertCount, label: "alerts", tone: summary.tone)
+            }
+
+            HStack {
+                Text(summary.activityLabel)
+                    .font(.caption2.weight(.semibold))
+                Spacer(minLength: 8)
+                if let activeTabTitle = summary.activeTabTitle {
+                    Text(activeTabTitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(isSelected ? accentColor.opacity(0.16) : Color.white.opacity(0.04))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(isSelected ? accentColor.opacity(0.85) : Color.white.opacity(0.08), lineWidth: isSelected ? 1.4 : 1)
+        }
+    }
+
+    private var accentColor: Color {
+        switch summary.tone {
+        case .idle:
+            return Color(red: 0.55, green: 0.59, blue: 0.67)
+        case .active:
+            return Color(red: 0.24, green: 0.73, blue: 0.78)
+        case .warning:
+            return Color(red: 0.95, green: 0.63, blue: 0.24)
+        case .critical:
+            return Color(red: 0.96, green: 0.37, blue: 0.33)
+        }
+    }
+}
+
+struct WorkspaceCanvasHeaderView: View {
+    let summary: WorkspacePresentationSummary
+    let restoredSession: Bool
+    let isApplyingLayout: Bool
+    let onApplyLayout: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(summary.title)
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                    Text(summary.capabilityLabel)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                VStack(alignment: .trailing, spacing: 8) {
+                    Button(isApplyingLayout ? "Applying Layout..." : "Apply Layout") {
+                        onApplyLayout()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isApplyingLayout)
+
+                    if restoredSession {
+                        Text("Restored session")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                ShellStatBadge(value: summary.columnCount, label: "cols", tone: .idle)
+                ShellStatBadge(value: summary.windowCount, label: "windows", tone: .idle)
+                ShellStatBadge(value: summary.runningTaskCount, label: "live", tone: .active)
+                ShellStatBadge(value: summary.alertCount, label: "alerts", tone: summary.tone)
+                ShellStatBadge(value: summary.shortcutCount, label: "custom keys", tone: .idle)
+            }
+
+            HStack(spacing: 8) {
+                ShellShortcutBadge(text: "Cmd+Shift+[ ] tabs")
+                ShellShortcutBadge(text: "Opt+Cmd+← → workspaces")
+                ShellShortcutBadge(text: "Opt+Cmd+L layout")
+            }
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(Color.white.opacity(0.05))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        }
+    }
+}
+
+struct ShellStatBadge: View {
+    let value: Int
+    let label: String
+    let tone: AppShellTone
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(value)")
+                .font(.caption.weight(.bold))
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(tint.opacity(0.14))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var tint: Color {
+        switch tone {
+        case .idle:
+            return Color.white
+        case .active:
+            return Color.cyan
+        case .warning:
+            return Color.orange
+        case .critical:
+            return Color.red
+        }
+    }
+}
+
+struct ShellShortcutBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.monospaced())
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.white.opacity(0.06))
+            .clipShape(Capsule())
+    }
+}
+
+struct EmptyWorkspaceCanvasView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("No workspace selected")
+                .font(.title3.bold())
+            Text("Load or create a workspace manifest to start arranging terminals, browsers, and fixed pills.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(Color.white.opacity(0.04))
+        )
+    }
+}
+
 struct MiniWindowCard: View {
     let workspaceID: String
     let window: WorkspaceMiniWindowManifest
+    let isFocused: Bool
     @ObservedObject var terminalRuntime: TerminalRuntimeViewModel
+    let onFocusWindow: () -> Void
     let onSelectTab: (String, String) -> Void
     @State private var terminalInput = ""
 
@@ -535,21 +905,47 @@ struct MiniWindowCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(window.id)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(window.id)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(activeTab?.title ?? "Empty window")
+                        .font(.headline)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 6) {
+                    Text(isFocused ? "Focused" : "Background")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(isFocused ? Color.orange.opacity(0.24) : Color.white.opacity(0.08))
+                        .clipShape(Capsule())
+                    Text("\(window.tabs.count) tabs")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             HStack(spacing: 8) {
                 ForEach(window.tabs, id: \.id) { tab in
                     Button {
                         onSelectTab(window.id, tab.id)
                     } label: {
-                        Text(tab.title)
-                            .font(.caption)
+                        HStack(spacing: 6) {
+                            Image(systemName: symbol(for: tab.type))
+                                .font(.caption2)
+                            Text(tab.title)
+                                .font(.caption)
+                        }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(tab.id == activeTab?.id ? Color.blue.opacity(0.3) : Color.secondary.opacity(0.15))
+                            .background(
+                                tab.id == activeTab?.id
+                                    ? Color.cyan.opacity(0.28)
+                                    : Color.white.opacity(0.08)
+                            )
                             .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
@@ -604,8 +1000,31 @@ struct MiniWindowCard: View {
                 }
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(isFocused ? Color.white.opacity(0.09) : Color.white.opacity(0.05))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(
+                    isFocused ? Color.orange.opacity(0.55) : Color.white.opacity(0.08),
+                    lineWidth: isFocused ? 1.5 : 1
+                )
+        }
+        .shadow(color: Color.black.opacity(0.18), radius: 16, y: 10)
+        .onTapGesture(perform: onFocusWindow)
+    }
+
+    private func symbol(for type: WorkspacePaneType) -> String {
+        switch type {
+        case .terminal:
+            return "terminal"
+        case .browser:
+            return "globe"
+        case .pill:
+            return "capsule"
+        }
     }
 }
 
@@ -626,6 +1045,10 @@ struct TerminalPaneView: View {
                 Text(snapshot?.isRunning == true ? "Running" : "Stopped")
                     .font(.caption2.bold())
                     .foregroundStyle(snapshot?.isRunning == true ? .green : .secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background((snapshot?.isRunning == true ? Color.green : Color.white).opacity(0.12))
+                    .clipShape(Capsule())
                 Spacer(minLength: 8)
                 if let exitCode = snapshot?.exitCode {
                     Text("exit \(exitCode)")
@@ -639,6 +1062,13 @@ struct TerminalPaneView: View {
                     .buttonStyle(.bordered)
                     .disabled(isStarting)
                 }
+            }
+
+            if let command = snapshot?.command ?? tab.command, !command.isEmpty {
+                Text(command.joined(separator: " "))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
             ScrollView {
@@ -662,7 +1092,7 @@ struct TerminalPaneView: View {
                 .padding(8)
             }
             .frame(height: 140)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.35)))
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.42)))
 
             TextField(inputPlaceholder, text: $inputText)
                 .textFieldStyle(.roundedBorder)
@@ -712,15 +1142,34 @@ struct BrowserPaneView: View {
         RoundedRectangle(cornerRadius: 10)
             .fill(Color.white.opacity(0.05))
             .frame(height: 180)
-            .overlay(alignment: .center) {
-                VStack(spacing: 6) {
-                    Text("Browser Surface")
-                        .font(.caption.bold())
+            .overlay(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text((tab.browser?.rawValue.capitalized ?? "Browser"))
+                            .font(.headline)
+                        Spacer()
+                        Text("Dev surface")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Text(tab.url ?? "about:blank")
-                        .font(.caption2)
+                        .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
+
+                    HStack(spacing: 8) {
+                        Label("Workspace-tiled", systemImage: "square.split.2x1")
+                        if tab.browser == .chrome || tab.browser == .brave {
+                            Label("CDP-aware", systemImage: "dot.radiowaves.left.and.right")
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                    Spacer()
                 }
+                .padding(14)
             }
     }
 }
@@ -732,10 +1181,19 @@ struct PillPaneView: View {
         RoundedRectangle(cornerRadius: 10)
             .fill(Color.white.opacity(0.05))
             .frame(height: 180)
-            .overlay(alignment: .center) {
-                Text("Pill Pane: \(tab.title)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            .overlay(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(tab.title)
+                        .font(.headline)
+                    Text("Reserved for docked status surfaces and pinned wrappers.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Label("Always visible outside the scroll canvas", systemImage: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(14)
             }
     }
 }
@@ -1016,23 +1474,66 @@ struct FixedPillView: View {
     let state: StatusPillState?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(pill.title)
-                    .font(.caption.bold())
+        let presentation = FixedPillPresentation.make(pill: pill, state: state, now: Date())
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(presentation.title)
+                        .font(.caption.bold())
+                    Text(presentation.sourceLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                Circle()
-                    .fill(color)
-                    .frame(width: 8, height: 8)
+                Text(presentation.statusLabel)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(color.opacity(0.16))
+                    .clipShape(Capsule())
             }
 
-            Text(state?.message ?? "idle")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            Text(presentation.message)
+                .font(.caption)
                 .lineLimit(2)
+
+            if let progressValue = presentation.progressValue {
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: progressValue)
+                        .tint(color)
+                    if let progressLabel = presentation.progressLabel {
+                        Text(progressLabel)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            HStack {
+                Text(presentation.contextLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if presentation.unreadAlertCount > 0 {
+                    Text("\(presentation.unreadAlertCount)")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(color.opacity(0.18))
+                        .clipShape(Capsule())
+                }
+                Text(presentation.activityLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08)))
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.08)))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(color.opacity(0.28), lineWidth: 1)
+        }
     }
 
     private var color: Color {
@@ -1042,7 +1543,7 @@ struct FixedPillView: View {
         case .warning:
             return .orange
         case .info:
-            return .green
+            return state?.isRunning == true ? .cyan : .gray
         case nil:
             return .gray
         }

@@ -24,6 +24,10 @@
   - Concrete Ghostty runtime integration.
   - Dynamic `libghostty` loader (`dlopen`/`dlsym`) + typed symbol bridge + `GhosttyRuntimeBridge`.
 
+- `Sources/FlouiApp/AppShellPresentation.swift`
+  - Reusable presentation helpers for the SwiftUI shell.
+  - Includes `WorkspacePresentationSummary`, `FixedPillPresentation`, and `RelativeActivityFormatter` so sidebar/header/pill views share deterministic formatting logic instead of duplicating it in view bodies.
+
 - `Sources/BrowserOrchestrator/BrowserOrchestrator.swift`
   - Browser layout planning/orchestration and concrete integration adapters.
   - Includes `ChromiumDevToolsAdapter` target lifecycle cache and `URLSessionCDPClient`.
@@ -45,3 +49,4 @@
 - Ghostty integration stays behind `TerminalSurfaceBridge`; keep domain logic decoupled from symbol-level runtime details.
 - Browser automation logic should remain in adapters; keep workspace reducers pure and deterministic.
 - CDP event ingestion should map through `DevToolsStatusEventMapper` before touching pill store state.
+- UI chrome should derive counts, tone, and relative-time labels from `AppShellPresentation.swift`; avoid re-implementing workspace/pill formatting inside views.

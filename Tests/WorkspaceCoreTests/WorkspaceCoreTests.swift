@@ -101,6 +101,35 @@ func layoutReducerLoadAndSwitch() {
     #expect(state.workspaceOrder == ["w1", "w2"])
 }
 
+@Test("Layout reducer cycles workspaces with wrap-around")
+func layoutReducerCyclesWorkspaces() {
+    let primary = WorkspaceManifest(
+        id: "w1",
+        name: "First",
+        version: 1,
+        columns: [WorkspaceColumnManifest(id: "c1", windows: [WorkspaceMiniWindowManifest(id: "m1", tabs: [WorkspaceTabManifest(id: "t1", title: "A", type: .terminal)])])]
+    )
+    let secondary = WorkspaceManifest(
+        id: "w2",
+        name: "Second",
+        version: 1,
+        columns: [WorkspaceColumnManifest(id: "c2", windows: [WorkspaceMiniWindowManifest(id: "m2", tabs: [WorkspaceTabManifest(id: "t2", title: "B", type: .terminal)])])]
+    )
+
+    var state = WorkspaceLayoutState()
+    WorkspaceLayoutReducer.reduce(state: &state, action: .loadManifest(primary))
+    WorkspaceLayoutReducer.reduce(state: &state, action: .loadManifest(secondary))
+
+    WorkspaceLayoutReducer.reduce(state: &state, action: .cycleWorkspace(direction: .next))
+    #expect(state.activeWorkspaceID == "w2")
+
+    WorkspaceLayoutReducer.reduce(state: &state, action: .cycleWorkspace(direction: .next))
+    #expect(state.activeWorkspaceID == "w1")
+
+    WorkspaceLayoutReducer.reduce(state: &state, action: .cycleWorkspace(direction: .previous))
+    #expect(state.activeWorkspaceID == "w2")
+}
+
 @Test("Restore planner never auto-runs commands")
 func restorePlannerNeverAutoRuns() {
     let manifest = WorkspaceManifest(
@@ -306,4 +335,41 @@ func layoutReducerCycleTabs() {
     activeWorkspace = state.workspaces["w1"]
     window1 = activeWorkspace?.columns.first?.windows.first(where: { $0.id == "win-1" })
     #expect(window1?.activeTabID == "t1")
+}
+
+@Test("Layout reducer focuses a window for keyboard-driven navigation")
+func layoutReducerFocusesWindow() {
+    let manifest = WorkspaceManifest(
+        id: "w1",
+        name: "Workspace",
+        version: 1,
+        columns: [
+            WorkspaceColumnManifest(
+                id: "c1",
+                windows: [
+                    WorkspaceMiniWindowManifest(
+                        id: "win-1",
+                        activeTabID: "t1",
+                        tabs: [
+                            WorkspaceTabManifest(id: "t1", title: "One", type: .terminal),
+                        ]
+                    ),
+                    WorkspaceMiniWindowManifest(
+                        id: "win-2",
+                        activeTabID: "t2",
+                        tabs: [
+                            WorkspaceTabManifest(id: "t2", title: "Two", type: .browser),
+                        ]
+                    ),
+                ]
+            )
+        ]
+    )
+
+    var state = WorkspaceLayoutState()
+    WorkspaceLayoutReducer.reduce(state: &state, action: .loadManifest(manifest))
+
+    WorkspaceLayoutReducer.reduce(state: &state, action: .focusWindow("win-2"))
+
+    #expect(state.activeWindowIDByWorkspace["w1"] == "win-2")
 }

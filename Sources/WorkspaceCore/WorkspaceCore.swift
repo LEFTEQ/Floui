@@ -207,12 +207,19 @@ public enum WorkspaceTabCycleDirection: Equatable, Sendable {
     case previous
 }
 
+public enum WorkspaceCycleDirection: Equatable, Sendable {
+    case next
+    case previous
+}
+
 public enum WorkspaceLayoutAction: Equatable, Sendable {
     case loadManifest(WorkspaceManifest)
     case switchWorkspace(String)
+    case cycleWorkspace(direction: WorkspaceCycleDirection)
     case setHorizontalOffset(Double)
     case pinPill(String)
     case unpinPill(String)
+    case focusWindow(String)
     case selectTab(windowID: String, tabID: String)
     case cycleTab(direction: WorkspaceTabCycleDirection)
 }
@@ -231,13 +238,34 @@ public enum WorkspaceLayoutReducer {
             }
 
         case let .switchWorkspace(workspaceID):
-            if let manifest = state.workspaces[workspaceID] {
-                state.activeWorkspaceID = workspaceID
-                state.horizontalOffset = 0
-                if state.activeWindowIDByWorkspace[workspaceID] == nil {
-                    state.activeWindowIDByWorkspace[workspaceID] = firstWindowID(in: manifest)
-                }
+            switchWorkspace(workspaceID, state: &state)
+
+        case let .cycleWorkspace(direction):
+            guard !state.workspaceOrder.isEmpty else {
+                return
             }
+
+            let currentIndex = state.workspaceOrder.firstIndex(of: state.activeWorkspaceID ?? "") ?? 0
+            let nextIndex: Int
+            switch direction {
+            case .next:
+                nextIndex = (currentIndex + 1) % state.workspaceOrder.count
+            case .previous:
+                nextIndex = (currentIndex - 1 + state.workspaceOrder.count) % state.workspaceOrder.count
+            }
+
+            switchWorkspace(state.workspaceOrder[nextIndex], state: &state)
+
+        case let .focusWindow(windowID):
+            guard
+                let workspaceID = state.activeWorkspaceID,
+                let manifest = state.workspaces[workspaceID],
+                locateWindow(windowID: windowID, in: manifest) != nil
+            else {
+                return
+            }
+
+            state.activeWindowIDByWorkspace[workspaceID] = windowID
 
         case let .setHorizontalOffset(offset):
             state.horizontalOffset = max(0, offset)
@@ -307,6 +335,16 @@ public enum WorkspaceLayoutReducer {
 
     private static func firstWindowID(in manifest: WorkspaceManifest) -> String? {
         manifest.columns.first?.windows.first?.id
+    }
+
+    private static func switchWorkspace(_ workspaceID: String, state: inout WorkspaceLayoutState) {
+        if let manifest = state.workspaces[workspaceID] {
+            state.activeWorkspaceID = workspaceID
+            state.horizontalOffset = 0
+            if state.activeWindowIDByWorkspace[workspaceID] == nil {
+                state.activeWindowIDByWorkspace[workspaceID] = firstWindowID(in: manifest)
+            }
+        }
     }
 
     private static func locateWindow(windowID: String, in manifest: WorkspaceManifest) -> (columnIndex: Int, windowIndex: Int)? {
