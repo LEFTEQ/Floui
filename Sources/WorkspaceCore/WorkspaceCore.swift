@@ -325,6 +325,23 @@ public struct LastSessionMetadata: Codable, Equatable, Sendable {
     public init(paneCommands: [String: [String]] = [:]) {
         self.paneCommands = paneCommands
     }
+
+    public static func capture(from layoutState: WorkspaceLayoutState) -> LastSessionMetadata {
+        let paneCommands = layoutState.workspaceOrder
+            .compactMap { layoutState.workspaces[$0] }
+            .flatMap(\.columns)
+            .flatMap(\.windows)
+            .flatMap(\.tabs)
+            .reduce(into: [String: [String]]()) { result, tab in
+                guard tab.type == .terminal, let command = tab.command, !command.isEmpty else {
+                    return
+                }
+
+                result[tab.id] = command
+            }
+
+        return LastSessionMetadata(paneCommands: paneCommands)
+    }
 }
 
 public struct RestorePanePlan: Equatable, Sendable {

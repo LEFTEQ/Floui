@@ -293,6 +293,36 @@ func terminalWorkspaceRuntimeLifecycle() async throws {
     #expect(snapshot?.exitCode == 0)
 }
 
+@Test("TerminalWorkspaceRuntime can restart a pane after process exit")
+func terminalWorkspaceRuntimeRestartAfterExit() async throws {
+    let engine = RuntimeMockTerminalEngine()
+    let runtime = TerminalWorkspaceRuntime(engine: engine)
+    let config = TerminalSessionConfig(
+        workspaceID: "w1",
+        paneID: "term-1",
+        shellCommand: ["/bin/zsh"]
+    )
+
+    try await runtime.activateTerminal(config: config)
+
+    guard let firstSessionID = await runtime.sessionID(for: "term-1") else {
+        Issue.record("missing initial session id")
+        return
+    }
+
+    await engine.emit(sessionID: firstSessionID, event: .processExited(0))
+    try? await Task.sleep(nanoseconds: 30_000_000)
+
+    try await runtime.activateTerminal(config: config)
+
+    let started = await engine.startedConfigs
+    let secondSessionID = await runtime.sessionID(for: "term-1")
+
+    #expect(started.count == 2)
+    #expect(secondSessionID != nil)
+    #expect(secondSessionID != firstSessionID)
+}
+
 @Test("TerminalWorkspaceRuntime forwards input and errors for missing panes")
 func terminalWorkspaceRuntimeInputForwarding() async throws {
     let engine = RuntimeMockTerminalEngine()

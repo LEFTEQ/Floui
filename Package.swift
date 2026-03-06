@@ -86,6 +86,14 @@ let package = Package(
             dependencies: ["Permissions", "FlouiCore"]
         ),
         .testTarget(
+            name: "FlouiAppTests",
+            dependencies: [
+                "FlouiApp",
+                "WorkspaceCore",
+                "Permissions",
+            ]
+        ),
+        .testTarget(
             name: "E2EHybridTests",
             dependencies: [
                 "FlouiCore",

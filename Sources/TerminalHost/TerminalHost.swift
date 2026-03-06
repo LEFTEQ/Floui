@@ -345,6 +345,10 @@ public actor TerminalSessionManager {
         activeSessions[paneID]
     }
 
+    public func clearSession(for paneID: String) {
+        activeSessions.removeValue(forKey: paneID)
+    }
+
     public func attachView(paneID: String, surfaceID: String) async throws {
         guard let sessionID = activeSessions[paneID] else {
             throw FlouiError.notFound("no active terminal session for pane \(paneID)")
@@ -442,12 +446,12 @@ public actor TerminalWorkspaceRuntime {
         eventTasks[paneID] = Task {
             let stream = await self.engine.subscribeEvents(sessionID: sessionID)
             for await event in stream {
-                self.consume(event: event, paneID: paneID)
+                await self.consume(event: event, paneID: paneID)
             }
         }
     }
 
-    private func consume(event: TerminalEvent, paneID: String) {
+    private func consume(event: TerminalEvent, paneID: String) async {
         guard var state = statesByPaneID[paneID] else {
             return
         }
@@ -466,6 +470,7 @@ public actor TerminalWorkspaceRuntime {
             state.isRunning = false
             state.exitCode = code
             state.lastMessage = "Exited (\(code))"
+            await manager.clearSession(for: paneID)
         }
 
         statesByPaneID[paneID] = state

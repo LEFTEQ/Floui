@@ -134,6 +134,46 @@ func restorePlannerNeverAutoRuns() {
     #expect(plan.panes.first(where: { $0.paneID == "term-1" })?.command == ["/usr/bin/env", "echo", "hello"])
 }
 
+@Test("Last session metadata captures terminal commands from layout state")
+func lastSessionMetadataCapture() {
+    let manifest = WorkspaceManifest(
+        id: "w1",
+        name: "Workspace",
+        version: 1,
+        columns: [
+            WorkspaceColumnManifest(
+                id: "c1",
+                windows: [
+                    WorkspaceMiniWindowManifest(
+                        id: "win-1",
+                        tabs: [
+                            WorkspaceTabManifest(id: "term-1", title: "Shell", type: .terminal, command: ["/bin/zsh"]),
+                            WorkspaceTabManifest(id: "browser-1", title: "Docs", type: .browser, browser: .chrome, url: "https://example.com"),
+                        ]
+                    ),
+                    WorkspaceMiniWindowManifest(
+                        id: "win-2",
+                        tabs: [
+                            WorkspaceTabManifest(id: "term-2", title: "Worker", type: .terminal, command: ["/usr/bin/env", "swift", "test"]),
+                            WorkspaceTabManifest(id: "term-3", title: "No Command", type: .terminal),
+                        ]
+                    ),
+                ]
+            )
+        ]
+    )
+
+    var state = WorkspaceLayoutState()
+    WorkspaceLayoutReducer.reduce(state: &state, action: .loadManifest(manifest))
+
+    let metadata = LastSessionMetadata.capture(from: state)
+
+    #expect(metadata.paneCommands == [
+        "term-1": ["/bin/zsh"],
+        "term-2": ["/usr/bin/env", "swift", "test"],
+    ])
+}
+
 @Test("Workspace state store round-trips layout and metadata")
 func workspaceStateStoreRoundTrip() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

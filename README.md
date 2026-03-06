@@ -42,6 +42,9 @@ This repository now contains a working iterative implementation of the architect
   - `JSONWorkspaceStateStore` for restoring/saving layout + last session metadata
   - app bootstrap restores persisted state before falling back to sample workspace
   - state is persisted on layout changes and non-active scene transitions
+- App-shell orchestration:
+  - `WorkspaceAutomationCoordinator` coordinates restore priming, terminal preparation, and browser auto-apply from the active workspace
+  - restored terminal panes stay suspended until explicitly started, so persisted commands are not rerun automatically
 - `floui-cli` wrapper that emits structured `task.started/task.done` JSON events
 - Local `xcodebuild` test scripts aligned to TDD flow
 
@@ -50,8 +53,9 @@ This repository now contains a working iterative implementation of the architect
 - Tab shortcuts: `Cmd+Shift+]` for next tab, `Cmd+Shift+[` for previous tab.
 - Terminal tabs are now live runtime panes backed by `TerminalWorkspaceRuntime` (session state + input forwarding).
 - Terminal startup now prefers Ghostty automatically and falls back to external shell execution when Ghostty is unavailable.
+- Restored terminal panes show prior command metadata but require an explicit Start action before launching again.
 - Browser orchestration can be triggered from the fixed-pill rail using `Apply Layout`; failures surface recovery steps in-app.
-- Browser layouts also auto-apply on workspace activation and focus the active browser tab when a matching URL is present.
+- Browser layouts also auto-apply on workspace activation, scope permission checks to the browsers actually used in the workspace, and focus the active browser tab when a matching URL is present.
 
 ## Project Layout
 

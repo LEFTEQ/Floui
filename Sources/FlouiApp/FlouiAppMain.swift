@@ -16,6 +16,7 @@ struct FlouiAppMain: App {
     @State private var lastSessionMetadata = LastSessionMetadata()
     @State private var didBootstrapState = false
     @State private var didStartStatusIngestion = false
+    @State private var didRestorePersistedSession = false
 
     private let permissionController = PermissionOnboardingController(checker: MacPermissionChecker())
     private let workspaceStateStore = JSONWorkspaceStateStore()
@@ -27,6 +28,8 @@ struct FlouiAppMain: App {
                 layoutState: $layoutState,
                 pillStore: $pillStore,
                 permissionState: $permissionState,
+                lastSessionMetadata: lastSessionMetadata,
+                didRestorePersistedSession: didRestorePersistedSession,
                 permissionController: permissionController
             )
             .frame(minWidth: 1320, minHeight: 780)
@@ -77,12 +80,15 @@ struct FlouiAppMain: App {
             await MainActor.run {
                 layoutState = snapshot.layoutState
                 lastSessionMetadata = snapshot.lastSessionMetadata
+                didRestorePersistedSession = true
             }
         } else {
             var seededLayoutState = WorkspaceLayoutState()
             WorkspaceLayoutReducer.reduce(state: &seededLayoutState, action: .loadManifest(Self.sampleManifest))
             await MainActor.run {
                 layoutState = seededLayoutState
+                lastSessionMetadata = LastSessionMetadata.capture(from: seededLayoutState)
+                didRestorePersistedSession = false
             }
         }
 
@@ -93,9 +99,14 @@ struct FlouiAppMain: App {
     }
 
     private func persist(layoutState: WorkspaceLayoutState) async {
+        let metadata = LastSessionMetadata.capture(from: layoutState)
+        await MainActor.run {
+            lastSessionMetadata = metadata
+        }
+
         let snapshot = WorkspacePersistenceSnapshot(
             layoutState: layoutState,
-            lastSessionMetadata: lastSessionMetadata,
+            lastSessionMetadata: metadata,
             savedAt: Date()
         )
         try? await workspaceStateStore.save(snapshot)
@@ -173,10 +184,40 @@ struct AppShellView: View {
     @Binding var pillStore: StatusPillStore
     @Binding var permissionState: PermissionOnboardingState
 
+    let lastSessionMetadata: LastSessionMetadata
+    let didRestorePersistedSession: Bool
     let permissionController: PermissionOnboardingController
     private let permissionEvaluator = PermissionHealthEvaluator()
-    @StateObject private var terminalRuntime = TerminalRuntimeViewModel()
-    @StateObject private var browserAutomation = BrowserAutomationController()
+    @StateObject private var terminalRuntime: TerminalRuntimeViewModel
+    @StateObject private var browserAutomation: BrowserAutomationController
+    @StateObject private var automationCoordinator: WorkspaceAutomationCoordinator
+
+    init(
+        layoutState: Binding<WorkspaceLayoutState>,
+        pillStore: Binding<StatusPillStore>,
+        permissionState: Binding<PermissionOnboardingState>,
+        lastSessionMetadata: LastSessionMetadata,
+        didRestorePersistedSession: Bool,
+        permissionController: PermissionOnboardingController
+    ) {
+        _layoutState = layoutState
+        _pillStore = pillStore
+        _permissionState = permissionState
+        self.lastSessionMetadata = lastSessionMetadata
+        self.didRestorePersistedSession = didRestorePersistedSession
+        self.permissionController = permissionController
+
+        let terminalRuntime = TerminalRuntimeViewModel()
+        let browserAutomation = BrowserAutomationController()
+        _terminalRuntime = StateObject(wrappedValue: terminalRuntime)
+        _browserAutomation = StateObject(wrappedValue: browserAutomation)
+        _automationCoordinator = StateObject(
+            wrappedValue: WorkspaceAutomationCoordinator(
+                terminalRuntime: terminalRuntime,
+                browserAutomation: browserAutomation
+            )
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -229,11 +270,14 @@ struct AppShellView: View {
 
             shortcutHandlers
         }
-        .task(id: activeWorkspaceTaskKey) {
-            guard let workspace = activeWorkspace else {
-                return
-            }
-            applyBrowserLayout(workspace: workspace, force: false)
+        .task(id: automationTaskKey) {
+            automationCoordinator.sync(
+                layoutState: layoutState,
+                lastSessionMetadata: lastSessionMetadata,
+                permissionState: permissionState,
+                restoredSession: didRestorePersistedSession,
+                forceBrowserApply: false
+            )
         }
     }
 
@@ -314,12 +358,20 @@ struct AppShellView: View {
         layoutState.activeWorkspaceID ?? "default"
     }
 
-    private var activeWorkspaceTaskKey: String {
-        guard let workspace = activeWorkspace else {
-            return "no-workspace"
+    private var automationTaskKey: String {
+        let workspaceKey: String
+        if let workspace = activeWorkspace {
+            workspaceKey = "\(workspace.id)-\(workspace.hashValue)"
+        } else {
+            workspaceKey = "no-workspace"
         }
 
-        return "\(workspace.id)-\(workspace.hashValue)"
+        let permissionKey = permissionState.health.snapshots
+            .sorted { $0.kind.rawValue < $1.kind.rawValue }
+            .map { "\($0.kind.rawValue):\($0.status.rawValue)" }
+            .joined(separator: ",")
+
+        return "\(workspaceKey)|\(permissionKey)|restored:\(didRestorePersistedSession)"
     }
 
     private var shortcutHandlers: some View {
@@ -347,15 +399,13 @@ struct AppShellView: View {
     }
 
     private func applyBrowserLayout(force: Bool) {
-        guard let workspace = activeWorkspace else {
-            return
-        }
-
-        applyBrowserLayout(workspace: workspace, force: force)
-    }
-
-    private func applyBrowserLayout(workspace: WorkspaceManifest, force: Bool) {
-        browserAutomation.apply(workspace: workspace, force: force)
+        automationCoordinator.sync(
+            layoutState: layoutState,
+            lastSessionMetadata: lastSessionMetadata,
+            permissionState: permissionState,
+            restoredSession: didRestorePersistedSession,
+            forceBrowserApply: force
+        )
     }
 }
 
@@ -485,18 +535,28 @@ struct MiniWindowCard: View {
 
             Group {
                 if let tab = activeTab {
+                    let surfaceID = "surface-\(window.id)-\(tab.id)"
                     switch tab.type {
                     case .terminal:
                         TerminalPaneView(
                             tab: tab,
                             workspaceID: workspaceID,
                             snapshot: terminalRuntime.snapshotsByPaneID[tab.id],
+                            requiresManualStart: terminalRuntime.requiresManualStart(paneID: tab.id),
+                            isStarting: terminalRuntime.startingPaneIDs.contains(tab.id),
                             inputText: $terminalInput,
                             onAppear: {
                                 terminalRuntime.activate(
                                     tab: tab,
                                     workspaceID: workspaceID,
-                                    surfaceID: "surface-\(window.id)-\(tab.id)"
+                                    surfaceID: surfaceID
+                                )
+                            },
+                            onStart: {
+                                terminalRuntime.start(
+                                    tab: tab,
+                                    workspaceID: workspaceID,
+                                    surfaceID: surfaceID
                                 )
                             },
                             onSubmitInput: { value in
@@ -530,8 +590,11 @@ struct TerminalPaneView: View {
     let tab: WorkspaceTabManifest
     let workspaceID: String
     let snapshot: TerminalPaneRuntimeState?
+    let requiresManualStart: Bool
+    let isStarting: Bool
     @Binding var inputText: String
     let onAppear: () -> Void
+    let onStart: () -> Void
     let onSubmitInput: (String) -> Void
 
     var body: some View {
@@ -545,6 +608,13 @@ struct TerminalPaneView: View {
                     Text("exit \(exitCode)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                }
+                if snapshot?.isRunning != true {
+                    Button(startButtonTitle) {
+                        onStart()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isStarting)
                 }
             }
 
@@ -571,9 +641,10 @@ struct TerminalPaneView: View {
             .frame(height: 140)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.35)))
 
-            TextField("Send input to \(tab.id)", text: $inputText)
+            TextField(inputPlaceholder, text: $inputText)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption)
+                .disabled(snapshot?.isRunning != true)
                 .onSubmit {
                     let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else {
@@ -584,6 +655,30 @@ struct TerminalPaneView: View {
                 }
         }
         .onAppear(perform: onAppear)
+    }
+
+    private var startButtonTitle: String {
+        if isStarting {
+            return "Starting..."
+        }
+
+        if requiresManualStart {
+            return "Start"
+        }
+
+        return snapshot == nil ? "Start" : "Restart"
+    }
+
+    private var inputPlaceholder: String {
+        if snapshot?.isRunning == true {
+            return "Send input to \(tab.id)"
+        }
+
+        if requiresManualStart {
+            return "Restored terminal. Start manually to resume."
+        }
+
+        return "Start terminal to send input"
     }
 }
 
@@ -623,14 +718,24 @@ struct PillPaneView: View {
 }
 
 @MainActor
-final class TerminalRuntimeViewModel: ObservableObject {
-    @Published private(set) var snapshotsByPaneID: [String: TerminalPaneRuntimeState] = [:]
+final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordinating {
+    private struct PreparedTerminalConfig: Sendable {
+        var workspaceID: String
+        var command: [String]
+    }
 
-    private let runtime = TerminalWorkspaceRuntime(engine: DefaultTerminalEngineFactory.make())
+    @Published private(set) var snapshotsByPaneID: [String: TerminalPaneRuntimeState] = [:]
+    @Published private(set) var startingPaneIDs = Set<String>()
+
+    private let runtime: TerminalWorkspaceRuntime
     private var activePaneIDs = Set<String>()
+    private var preparedConfigsByPaneID: [String: PreparedTerminalConfig] = [:]
+    private var surfaceIDsByPaneID: [String: String] = [:]
+    private var suspendedPaneIDs = Set<String>()
     private var pollTask: Task<Void, Never>?
 
-    init() {
+    init(engine: TerminalEngine = DefaultTerminalEngineFactory.make()) {
+        runtime = TerminalWorkspaceRuntime(engine: engine)
         pollTask = Task { [weak self] in
             await self?.pollLoop()
         }
@@ -646,29 +751,32 @@ final class TerminalRuntimeViewModel: ObservableObject {
         }
 
         activePaneIDs.insert(tab.id)
-        let command = (tab.command?.isEmpty == false) ? (tab.command ?? ["/bin/zsh"]) : ["/bin/zsh"]
-        let config = TerminalSessionConfig(
+        preparedConfigsByPaneID[tab.id] = PreparedTerminalConfig(
             workspaceID: workspaceID,
-            paneID: tab.id,
-            shellCommand: command
+            command: resolvedCommand(for: tab.id, fallback: tab.command)
         )
+        surfaceIDsByPaneID[tab.id] = surfaceID
 
-        Task { [runtime] in
-            do {
-                try await runtime.activateTerminal(config: config)
-                try? await runtime.attachSurface(paneID: tab.id, surfaceID: surfaceID)
-            } catch {
-                await MainActor.run {
-                    self.snapshotsByPaneID[tab.id] = TerminalPaneRuntimeState(
-                        paneID: tab.id,
-                        workspaceID: workspaceID,
-                        command: command,
-                        isRunning: false,
-                        lastMessage: "Terminal start failed: \(error.localizedDescription)",
-                        outputLines: []
-                    )
-                }
-            }
+        Task { [weak self] in
+            await self?.activatePaneIfNeeded(paneID: tab.id)
+        }
+    }
+
+    func start(tab: WorkspaceTabManifest, workspaceID: String, surfaceID: String) {
+        guard tab.type == .terminal else {
+            return
+        }
+
+        activePaneIDs.insert(tab.id)
+        preparedConfigsByPaneID[tab.id] = PreparedTerminalConfig(
+            workspaceID: workspaceID,
+            command: resolvedCommand(for: tab.id, fallback: tab.command)
+        )
+        surfaceIDsByPaneID[tab.id] = surfaceID
+        suspendedPaneIDs.remove(tab.id)
+
+        Task { [weak self] in
+            await self?.ensureSessionStarted(for: tab.id)
         }
     }
 
@@ -676,6 +784,45 @@ final class TerminalRuntimeViewModel: ObservableObject {
         Task { [runtime] in
             try? await runtime.sendInput(paneID: paneID, input: input)
         }
+    }
+
+    func primeRestorePlans(_ plans: [WorkspaceRestorePlan]) {
+        for plan in plans {
+            for pane in plan.panes where pane.type == .terminal {
+                let command = resolvedCommand(for: pane.paneID, fallback: pane.command)
+                preparedConfigsByPaneID[pane.paneID] = PreparedTerminalConfig(
+                    workspaceID: plan.workspaceID,
+                    command: command
+                )
+
+                guard pane.autoRun == false else {
+                    continue
+                }
+
+                suspendedPaneIDs.insert(pane.paneID)
+                snapshotsByPaneID[pane.paneID] = TerminalPaneRuntimeState(
+                    paneID: pane.paneID,
+                    workspaceID: plan.workspaceID,
+                    command: command,
+                    isRunning: false,
+                    lastMessage: "Restored. Command not auto-run.",
+                    outputLines: []
+                )
+            }
+        }
+    }
+
+    func prepare(workspace: WorkspaceManifest) {
+        for tab in workspace.columns.flatMap(\.windows).flatMap(\.tabs) where tab.type == .terminal {
+            preparedConfigsByPaneID[tab.id] = PreparedTerminalConfig(
+                workspaceID: workspace.id,
+                command: resolvedCommand(for: tab.id, fallback: tab.command)
+            )
+        }
+    }
+
+    func requiresManualStart(paneID: String) -> Bool {
+        suspendedPaneIDs.contains(paneID)
     }
 
     private func pollLoop() async {
@@ -689,10 +836,94 @@ final class TerminalRuntimeViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
     }
+
+    private func activatePaneIfNeeded(paneID: String) async {
+        if startingPaneIDs.contains(paneID) {
+            return
+        }
+
+        if suspendedPaneIDs.contains(paneID) {
+            return
+        }
+
+        if let sessionID = await runtime.sessionID(for: paneID) {
+            await attachSurfaceIfNeeded(paneID: paneID, sessionID: sessionID)
+            return
+        }
+
+        if snapshotsByPaneID[paneID] != nil {
+            return
+        }
+
+        await ensureSessionStarted(for: paneID)
+    }
+
+    private func ensureSessionStarted(for paneID: String) async {
+        if startingPaneIDs.contains(paneID) {
+            return
+        }
+
+        guard let prepared = preparedConfigsByPaneID[paneID] else {
+            return
+        }
+
+        if let sessionID = await runtime.sessionID(for: paneID) {
+            await attachSurfaceIfNeeded(paneID: paneID, sessionID: sessionID)
+            return
+        }
+
+        startingPaneIDs.insert(paneID)
+        defer { startingPaneIDs.remove(paneID) }
+
+        let config = TerminalSessionConfig(
+            workspaceID: prepared.workspaceID,
+            paneID: paneID,
+            shellCommand: prepared.command
+        )
+
+        do {
+            try await runtime.activateTerminal(config: config)
+            if let snapshot = await runtime.snapshot(for: paneID) {
+                snapshotsByPaneID[paneID] = snapshot
+            }
+            if let sessionID = await runtime.sessionID(for: paneID) {
+                await attachSurfaceIfNeeded(paneID: paneID, sessionID: sessionID)
+            }
+        } catch {
+            snapshotsByPaneID[paneID] = TerminalPaneRuntimeState(
+                paneID: paneID,
+                workspaceID: prepared.workspaceID,
+                command: prepared.command,
+                isRunning: false,
+                lastMessage: "Terminal start failed: \(error.localizedDescription)",
+                outputLines: []
+            )
+        }
+    }
+
+    private func attachSurfaceIfNeeded(paneID: String, sessionID _: TerminalSessionID) async {
+        guard let surfaceID = surfaceIDsByPaneID[paneID] else {
+            return
+        }
+
+        try? await runtime.attachSurface(paneID: paneID, surfaceID: surfaceID)
+    }
+
+    private func resolvedCommand(for paneID: String, fallback: [String]?) -> [String] {
+        if let prepared = preparedConfigsByPaneID[paneID] {
+            return prepared.command
+        }
+
+        if let fallback, !fallback.isEmpty {
+            return fallback
+        }
+
+        return ["/bin/zsh"]
+    }
 }
 
 @MainActor
-final class BrowserAutomationController: ObservableObject {
+final class BrowserAutomationController: ObservableObject, BrowserWorkspaceCoordinating {
     @Published var recoveryIssue: BrowserRecoveryIssue?
     @Published private(set) var isApplying = false
 

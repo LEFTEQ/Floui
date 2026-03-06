@@ -6,5 +6,6 @@ SCHEME="$(resolve_scheme)"
 
 echo "Running integration tests on scheme: $SCHEME"
 run_tests "$SCHEME" \
+  -only-testing:FlouiAppTests \
   -only-testing:TerminalHostTests \
   -only-testing:BrowserOrchestratorTests
