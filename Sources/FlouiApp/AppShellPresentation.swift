@@ -1,5 +1,6 @@
 import Foundation
 import StatusPills
+import TerminalHost
 import WorkspaceCore
 
 enum AppShellTone: String, Equatable, Sendable {
@@ -219,4 +220,145 @@ enum RelativeActivityFormatter {
 
 private func pluralized(_ noun: String, count: Int) -> String {
     count == 1 ? noun : "\(noun)s"
+}
+
+struct TerminalRuntimeEntryPresentation: Equatable, Sendable, Identifiable {
+    let id: String
+    let paneID: String
+    let workspaceID: String
+    let workspaceName: String
+    let terminalTitle: String
+    let shellLabel: String
+    let directoryLabel: String
+    let branchLabel: String?
+    let activityLabel: String
+    let isRunning: Bool
+    let isActiveWorkspace: Bool
+    let tone: AppShellTone
+}
+
+struct TerminalRuntimePanelPresentation: Equatable, Sendable {
+    let entries: [TerminalRuntimeEntryPresentation]
+    let liveCount: Int
+    let readyCount: Int
+    let stoppedCount: Int
+
+    static func build(
+        layoutState: WorkspaceLayoutState,
+        snapshotsByPaneID: [String: TerminalPaneRuntimeState]
+    ) -> TerminalRuntimePanelPresentation {
+        let entries = layoutState.workspaceOrder
+            .compactMap { layoutState.workspaces[$0] }
+            .flatMap { workspace in
+                workspace.columns
+                    .flatMap(\.windows)
+                    .flatMap(\.tabs)
+                    .compactMap { tab -> TerminalRuntimeEntryPresentation? in
+                        guard tab.type == .terminal else {
+                            return nil
+                        }
+
+                        let snapshot = snapshotsByPaneID[tab.id]
+                        let currentDirectory = snapshot?.currentDirectory ?? snapshot?.workingDirectory ?? tab.workingDirectory
+                        let activityLabel: String
+                        let tone: AppShellTone
+
+                        if let activeCommand = snapshot?.activeCommand, !activeCommand.isEmpty {
+                            activityLabel = activeCommand
+                            tone = .active
+                        } else if snapshot?.isRunning == true {
+                            activityLabel = "Shell ready"
+                            tone = .idle
+                        } else if let lastMessage = snapshot?.lastMessage, !lastMessage.isEmpty {
+                            activityLabel = lastMessage
+                            tone = .warning
+                        } else {
+                            activityLabel = "Not started"
+                            tone = .idle
+                        }
+
+                        let shellLabel = (snapshot?.command ?? tab.command ?? ["/bin/zsh"])
+                            .joined(separator: " ")
+
+                        return TerminalRuntimeEntryPresentation(
+                            id: tab.id,
+                            paneID: tab.id,
+                            workspaceID: workspace.id,
+                            workspaceName: workspace.name,
+                            terminalTitle: tab.title,
+                            shellLabel: shellLabel,
+                            directoryLabel: compactPathLabel(currentDirectory),
+                            branchLabel: snapshot?.gitBranch,
+                            activityLabel: activityLabel,
+                            isRunning: snapshot?.isRunning ?? false,
+                            isActiveWorkspace: workspace.id == layoutState.activeWorkspaceID,
+                            tone: tone
+                        )
+                    }
+            }
+            .sorted(by: entryOrdering)
+
+        let liveCount = entries.filter { $0.isRunning && $0.tone == .active }.count
+        let readyCount = entries.filter { $0.isRunning && $0.tone != .active }.count
+        let stoppedCount = entries.count - liveCount - readyCount
+
+        return TerminalRuntimePanelPresentation(
+            entries: entries,
+            liveCount: liveCount,
+            readyCount: readyCount,
+            stoppedCount: stoppedCount
+        )
+    }
+
+    private static func entryOrdering(_ lhs: TerminalRuntimeEntryPresentation, _ rhs: TerminalRuntimeEntryPresentation) -> Bool {
+        if lhs.isActiveWorkspace != rhs.isActiveWorkspace {
+            return lhs.isActiveWorkspace && !rhs.isActiveWorkspace
+        }
+
+        if lhs.isRunning != rhs.isRunning {
+            return lhs.isRunning && !rhs.isRunning
+        }
+
+        if lhs.tone != rhs.tone {
+            return toneRank(lhs.tone) < toneRank(rhs.tone)
+        }
+
+        if lhs.workspaceName != rhs.workspaceName {
+            return lhs.workspaceName.localizedCaseInsensitiveCompare(rhs.workspaceName) == .orderedAscending
+        }
+
+        return lhs.terminalTitle.localizedCaseInsensitiveCompare(rhs.terminalTitle) == .orderedAscending
+    }
+
+    private static func toneRank(_ tone: AppShellTone) -> Int {
+        switch tone {
+        case .active:
+            return 0
+        case .warning:
+            return 1
+        case .critical:
+            return 2
+        case .idle:
+            return 3
+        }
+    }
+
+    private static func compactPathLabel(_ path: String?) -> String {
+        guard let path, !path.isEmpty else {
+            return "No directory"
+        }
+
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        let last = url.lastPathComponent
+        if last.isEmpty {
+            return path
+        }
+
+        let parent = url.deletingLastPathComponent().lastPathComponent
+        if parent.isEmpty || parent == "/" {
+            return last
+        }
+
+        return "\(parent)/\(last)"
+    }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import BrowserOrchestrator
 import FlouiCore
 import Permissions
@@ -365,6 +366,10 @@ struct AppShellView: View {
                     onRunTask: runTask
                 )
 
+                TerminalRuntimePanelSectionView(
+                    presentation: terminalRuntimePanelPresentation
+                )
+
                 Spacer(minLength: 0)
             }
         }
@@ -500,6 +505,13 @@ struct AppShellView: View {
             workspace: workspace,
             pillStore: pillStore,
             activeWindowID: layoutState.activeWindowIDByWorkspace[workspace.id]
+        )
+    }
+
+    private var terminalRuntimePanelPresentation: TerminalRuntimePanelPresentation {
+        TerminalRuntimePanelPresentation.build(
+            layoutState: layoutState,
+            snapshotsByPaneID: terminalRuntime.snapshotsByPaneID
         )
     }
 
@@ -881,6 +893,131 @@ struct GlobalTaskRunnerSectionView: View {
             }
         }
         .padding(.top, 4)
+    }
+}
+
+struct TerminalRuntimePanelSectionView: View {
+    let presentation: TerminalRuntimePanelPresentation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+                .overlay(Color.white.opacity(0.08))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Live Runtime")
+                    .font(.headline)
+                Text(presentation.entries.isEmpty ? "No terminal panes detected" : "Foreground commands, directories, and branch context across terminal panes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                ShellStatBadge(value: presentation.liveCount, label: "live", tone: .active)
+                ShellStatBadge(value: presentation.readyCount, label: "ready", tone: .idle)
+                ShellStatBadge(value: presentation.stoppedCount, label: "stopped", tone: .warning)
+            }
+
+            if presentation.entries.isEmpty {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.white.opacity(0.04))
+                    .frame(height: 88)
+                    .overlay {
+                        Text("Open a terminal workspace to track shell state.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+            } else {
+                ForEach(Array(presentation.entries.prefix(5))) { entry in
+                    TerminalRuntimeEntryCardView(entry: entry)
+                }
+
+                if presentation.entries.count > 5 {
+                    Text("+\(presentation.entries.count - 5) more terminal panes")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+}
+
+struct TerminalRuntimeEntryCardView: View {
+    let entry: TerminalRuntimeEntryPresentation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(entry.terminalTitle)
+                        .font(.caption.weight(.semibold))
+                    Text(entry.workspaceName)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Text(statusLabel)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(statusColor.opacity(0.14))
+                    .clipShape(Capsule())
+            }
+
+            Text(entry.activityLabel)
+                .font(.caption.monospaced())
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            HStack(spacing: 6) {
+                Text(entry.directoryLabel)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if let branch = entry.branchLabel, !branch.isEmpty {
+                    Text(branch)
+                        .font(.caption2.monospaced())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.white.opacity(0.07))
+                        .clipShape(Capsule())
+                }
+            }
+
+            Text(entry.shellLabel)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var statusLabel: String {
+        if entry.tone == .active {
+            return "task"
+        }
+
+        if entry.isRunning {
+            return "ready"
+        }
+
+        return "stopped"
+    }
+
+    private var statusColor: Color {
+        if entry.tone == .active {
+            return .cyan
+        }
+
+        if entry.isRunning {
+            return .green
+        }
+
+        return .orange
     }
 }
 
@@ -1290,6 +1427,7 @@ struct TerminalPaneView: View {
     let onAppear: () -> Void
     let onStart: () -> Void
     let onSubmitInput: (String) -> Void
+    @State private var transcriptSearch = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1316,43 +1454,51 @@ struct TerminalPaneView: View {
                 }
             }
 
-            if let command = snapshot?.command ?? tab.command, !command.isEmpty {
-                Text(command.joined(separator: " "))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            VStack(alignment: .leading, spacing: 6) {
+                if let command = snapshot?.command ?? tab.command, !command.isEmpty {
+                    Text(command.joined(separator: " "))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
 
-            if let workingDirectory = snapshot?.workingDirectory ?? tab.workingDirectory,
-               !workingDirectory.isEmpty
-            {
-                Text(workingDirectory)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(snapshot?.outputLines.suffix(120) ?? [], id: \.self) { line in
-                        Text(line)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if let lastMessage = snapshot?.lastMessage,
-                       !lastMessage.isEmpty
+                HStack(spacing: 6) {
+                    if let workingDirectory = snapshot?.currentDirectory ?? snapshot?.workingDirectory ?? tab.workingDirectory,
+                       !workingDirectory.isEmpty
                     {
-                        Text(lastMessage)
+                        Text(workingDirectory)
                             .font(.caption2.monospaced())
                             .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .lineLimit(1)
+                    }
+
+                    if let branch = snapshot?.gitBranch, !branch.isEmpty {
+                        Text(branch)
+                            .font(.caption2.monospaced())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(Capsule())
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
             }
-            .frame(height: 140)
+
+            HStack(spacing: 8) {
+                TextField("Search scrollback", text: $transcriptSearch)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+
+                Button("Copy") {
+                    copyTranscript()
+                }
+                .buttonStyle(.bordered)
+            }
+
+            SelectableTerminalTranscriptView(
+                transcript: transcriptText,
+                searchQuery: transcriptSearch
+            )
+            .frame(height: 190)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.42)))
 
             TextField(inputPlaceholder, text: $inputText)
@@ -1369,6 +1515,22 @@ struct TerminalPaneView: View {
                 }
         }
         .onAppear(perform: onAppear)
+    }
+
+    private var transcriptText: String {
+        var lines = snapshot?.outputLines ?? []
+        if let lastMessage = snapshot?.lastMessage,
+           !lastMessage.isEmpty,
+           lines.last != lastMessage
+        {
+            lines.append(lastMessage)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func copyTranscript() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(transcriptText, forType: .string)
     }
 
     private var startButtonTitle: String {
@@ -1471,14 +1633,19 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
     @Published private(set) var startingPaneIDs = Set<String>()
 
     private let runtime: TerminalWorkspaceRuntime
+    private let shellIntegration: ShellIntegrationController
     private var activePaneIDs = Set<String>()
     private var preparedConfigsByPaneID: [String: PreparedTerminalConfig] = [:]
     private var surfaceIDsByPaneID: [String: String] = [:]
     private var suspendedPaneIDs = Set<String>()
     private var pollTask: Task<Void, Never>?
 
-    init(engine: TerminalEngine = DefaultTerminalEngineFactory.make()) {
+    init(
+        engine: TerminalEngine = DefaultTerminalEngineFactory.make(),
+        shellIntegration: ShellIntegrationController = ShellIntegrationController()
+    ) {
         runtime = TerminalWorkspaceRuntime(engine: engine)
+        self.shellIntegration = shellIntegration
         pollTask = Task { [weak self] in
             await self?.pollLoop()
         }
@@ -1655,7 +1822,14 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
         )
 
         do {
-            try await runtime.activateTerminal(config: config)
+            let launch = try shellIntegration.prepare(command: config.shellCommand, environment: config.environment)
+            try await runtime.activateTerminal(config: TerminalSessionConfig(
+                workspaceID: config.workspaceID,
+                paneID: config.paneID,
+                shellCommand: launch.command,
+                workingDirectory: config.workingDirectory,
+                environment: launch.environment
+            ))
             if let snapshot = await runtime.snapshot(for: paneID) {
                 snapshotsByPaneID[paneID] = snapshot
             }

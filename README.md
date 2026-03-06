@@ -49,6 +49,13 @@ This repository now contains a working iterative implementation of the architect
   - card-based workspace sidebar with per-workspace activity summaries
   - workspace cycling/focus reducer actions and tested presentation helpers for pill/workspace telemetry
   - global task runner sidebar for repo-aware package scripts, Docker Compose flows, Make targets, SwiftPM commands, and Xcode launch actions across terminal directories
+  - live runtime sidebar for cross-workspace shell status, active commands, cwd, and branch context
+- Shell-aware terminal context:
+  - interactive `zsh`/`bash` launches are instrumented so panes report cwd, git branch, running command, and prompt-ready transitions back into Floui
+  - shell markers are stripped from visible transcript output before scrollback is rendered
+- Terminal transcript UX:
+  - searchable AppKit-backed scrollback view with text selection and copy support
+  - larger scrollback retention (5,000 lines per pane)
 - `floui-cli` wrapper that emits structured `task.started/task.done` JSON events
 - Local `xcodebuild` test scripts aligned to TDD flow
 - Release hardening scaffolding:
@@ -63,11 +70,13 @@ This repository now contains a working iterative implementation of the architect
 - Workspace shortcuts: `Opt+Cmd+Right` for next workspace, `Opt+Cmd+Left` for previous workspace, `Opt+Cmd+L` to re-apply browser layout.
 - Terminal tabs are now live runtime panes backed by `TerminalWorkspaceRuntime` (session state + input forwarding).
 - Terminal startup now prefers Ghostty automatically and falls back to external shell execution when Ghostty is unavailable.
+- Interactive `zsh`/`bash` panes now report live cwd, branch, and active-command state into the shell UI and runtime sidebar.
 - Restored terminal panes show prior command metadata but require an explicit Start action before launching again.
 - Browser orchestration can be triggered from the fixed-pill rail using `Apply Layout`; failures surface recovery steps in-app.
 - Browser layouts also auto-apply on workspace activation, scope permission checks to the browsers actually used in the workspace, and focus the active browser tab when a matching URL is present.
 - The shell now highlights the focused mini-window, exposes workspace activity summaries, and keeps pill telemetry visible with progress and alert counts.
 - Terminal tabs can declare a `workingDirectory`; the sidebar task runner uses that context to discover scripts/containers and dispatch quick-run commands back into the matching shell.
+- Terminal panes expose searchable selectable scrollback with a one-click copy action, but this is still not a full Warp/VS Code-class terminal emulator yet.
 
 ## Project Layout
 

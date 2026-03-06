@@ -356,6 +356,10 @@ public struct TerminalPaneRuntimeState: Equatable, Sendable {
     public var workspaceID: String
     public var command: [String]
     public var workingDirectory: String?
+    public var currentDirectory: String?
+    public var gitBranch: String?
+    public var activeCommand: String?
+    public var recentCommands: [String]
     public var isRunning: Bool
     public var lastMessage: String
     public var outputLines: [String]
@@ -366,6 +370,10 @@ public struct TerminalPaneRuntimeState: Equatable, Sendable {
         workspaceID: String,
         command: [String],
         workingDirectory: String? = nil,
+        currentDirectory: String? = nil,
+        gitBranch: String? = nil,
+        activeCommand: String? = nil,
+        recentCommands: [String] = [],
         isRunning: Bool,
         lastMessage: String,
         outputLines: [String] = [],
@@ -375,6 +383,10 @@ public struct TerminalPaneRuntimeState: Equatable, Sendable {
         self.workspaceID = workspaceID
         self.command = command
         self.workingDirectory = workingDirectory
+        self.currentDirectory = currentDirectory ?? workingDirectory
+        self.gitBranch = gitBranch
+        self.activeCommand = activeCommand
+        self.recentCommands = recentCommands
         self.isRunning = isRunning
         self.lastMessage = lastMessage
         self.outputLines = outputLines
@@ -387,6 +399,7 @@ public actor TerminalWorkspaceRuntime {
     private let manager: TerminalSessionManager
     private var eventTasks: [String: Task<Void, Never>] = [:]
     private var statesByPaneID: [String: TerminalPaneRuntimeState] = [:]
+    private var integrationParsersByPaneID: [String: TerminalIntegrationParser] = [:]
 
     public init(engine: TerminalEngine) {
         self.engine = engine
@@ -404,9 +417,11 @@ public actor TerminalWorkspaceRuntime {
             workspaceID: config.workspaceID,
             command: config.shellCommand,
             workingDirectory: config.workingDirectory,
+            currentDirectory: config.workingDirectory,
             isRunning: true,
             lastMessage: "Session started"
         )
+        integrationParsersByPaneID[config.paneID] = TerminalIntegrationParser()
         startEventPump(paneID: config.paneID, sessionID: sessionID)
     }
 
@@ -455,8 +470,13 @@ public actor TerminalWorkspaceRuntime {
 
         switch event {
         case let .output(text):
-            appendOutput(text, to: &state.outputLines)
-            if let last = state.outputLines.last {
+            var parser = integrationParsersByPaneID[paneID] ?? TerminalIntegrationParser()
+            let parsed = parser.consume(text)
+            integrationParsersByPaneID[paneID] = parser
+
+            applyIntegrationEvents(parsed.events, to: &state)
+            appendOutput(parsed.visibleLines, to: &state.outputLines)
+            if let last = parsed.visibleLines.last ?? state.outputLines.last {
                 state.lastMessage = last
             }
 
@@ -464,8 +484,14 @@ public actor TerminalWorkspaceRuntime {
             state.lastMessage = message
 
         case let .processExited(code):
+            if var parser = integrationParsersByPaneID.removeValue(forKey: paneID) {
+                let trailing = parser.finish()
+                applyIntegrationEvents(trailing.events, to: &state)
+                appendOutput(trailing.visibleLines, to: &state.outputLines)
+            }
             state.isRunning = false
             state.exitCode = code
+            state.activeCommand = nil
             state.lastMessage = "Exited (\(code))"
             await manager.clearSession(for: paneID)
         }
@@ -473,16 +499,38 @@ public actor TerminalWorkspaceRuntime {
         statesByPaneID[paneID] = state
     }
 
-    private func appendOutput(_ text: String, to lines: inout [String]) {
-        let normalized = text
-            .split(separator: "\n")
-            .map(String.init)
+    private func appendOutput(_ newLines: [String], to lines: inout [String]) {
+        let normalized = newLines
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
         lines.append(contentsOf: normalized)
-        if lines.count > 400 {
-            lines.removeFirst(lines.count - 400)
+        if lines.count > 5_000 {
+            lines.removeFirst(lines.count - 5_000)
+        }
+    }
+
+    private func applyIntegrationEvents(_ events: [TerminalIntegrationEvent], to state: inout TerminalPaneRuntimeState) {
+        for event in events {
+            switch event {
+            case let .currentDirectory(path):
+                state.currentDirectory = path
+
+            case let .gitBranch(branch):
+                state.gitBranch = branch
+
+            case let .commandStarted(command):
+                state.activeCommand = command
+                if state.recentCommands.first != command {
+                    state.recentCommands.insert(command, at: 0)
+                    if state.recentCommands.count > 20 {
+                        state.recentCommands.removeLast(state.recentCommands.count - 20)
+                    }
+                }
+
+            case .promptReady:
+                state.activeCommand = nil
+            }
         }
     }
 }

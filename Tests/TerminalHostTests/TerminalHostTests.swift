@@ -148,6 +148,29 @@ actor FailingGhosttyProvider: GhosttyFunctionProviding {
     }
 }
 
+@Test("Terminal integration parser strips shell markers and preserves visible output")
+func terminalIntegrationParserTracksShellMarkers() {
+    var parser = TerminalIntegrationParser()
+
+    let first = parser.consume("__FLOUI__CWD\t/Users/dev/project\nhello\n__FLOUI__BRANCH\tmain\n")
+    #expect(first.visibleLines == ["hello"])
+    #expect(first.events == [
+        .currentDirectory("/Users/dev/project"),
+        .gitBranch("main"),
+    ])
+
+    let second = parser.consume("__FLOUI__RUN\tpnpm run dev")
+    #expect(second.visibleLines.isEmpty)
+    #expect(second.events.isEmpty)
+
+    let third = parser.consume("\nwatching\n__FLOUI__IDLE\n")
+    #expect(third.visibleLines == ["watching"])
+    #expect(third.events == [
+        .commandStarted("pnpm run dev"),
+        .promptReady,
+    ])
+}
+
 @Test("GhosttyTerminalEngine delegates to surface bridge")
 func ghosttyEngineDelegation() async throws {
     let bridge = RecordingSurfaceBridge()
@@ -291,6 +314,35 @@ func terminalWorkspaceRuntimeLifecycle() async throws {
     #expect(snapshot?.isRunning == false)
     #expect(snapshot?.lastMessage == "Exited (0)")
     #expect(snapshot?.exitCode == 0)
+}
+
+@Test("TerminalWorkspaceRuntime updates shell context from integration markers")
+func terminalWorkspaceRuntimeTracksShellContext() async throws {
+    let engine = RuntimeMockTerminalEngine()
+    let runtime = TerminalWorkspaceRuntime(engine: engine)
+
+    try await runtime.activateTerminal(config: TerminalSessionConfig(
+        workspaceID: "w1",
+        paneID: "term-ctx",
+        shellCommand: ["/bin/zsh"],
+        workingDirectory: "/seed"
+    ))
+
+    guard let sessionID = await runtime.sessionID(for: "term-ctx") else {
+        Issue.record("missing context session id")
+        return
+    }
+
+    await engine.emit(sessionID: sessionID, event: .output("__FLOUI__CWD\t/Users/dev/project\n__FLOUI__BRANCH\tfeature/runtime\n__FLOUI__RUN\tpnpm run dev\n"))
+    await engine.emit(sessionID: sessionID, event: .output("server ready\n__FLOUI__IDLE\n"))
+    try? await Task.sleep(nanoseconds: 30_000_000)
+
+    let snapshot = await runtime.snapshot(for: "term-ctx")
+    #expect(snapshot?.currentDirectory == "/Users/dev/project")
+    #expect(snapshot?.gitBranch == "feature/runtime")
+    #expect(snapshot?.activeCommand == nil)
+    #expect(snapshot?.recentCommands.first == "pnpm run dev")
+    #expect(snapshot?.outputLines.contains("server ready") == true)
 }
 
 @Test("TerminalWorkspaceRuntime can restart a pane after process exit")

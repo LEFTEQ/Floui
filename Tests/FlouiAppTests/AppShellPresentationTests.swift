@@ -1,6 +1,7 @@
 @testable import FlouiApp
 import Foundation
 import StatusPills
+import TerminalHost
 import Testing
 import WorkspaceCore
 
@@ -130,3 +131,89 @@ func relativeActivityFormatterUsesCompactLabels() {
     #expect(RelativeActivityFormatter.describe(since: now.addingTimeInterval(-7_200), now: now) == "2h ago")
 }
 
+@Test("Terminal runtime panel presentation summarizes active commands and shell context")
+func terminalRuntimePanelPresentationSummarizesShellState() {
+    let layoutState = WorkspaceLayoutState(
+        activeWorkspaceID: "shipyard",
+        workspaceOrder: ["shipyard", "ops"],
+        workspaces: [
+            "shipyard": WorkspaceManifest(
+                id: "shipyard",
+                name: "Shipyard",
+                version: 1,
+                columns: [
+                    WorkspaceColumnManifest(
+                        id: "col-1",
+                        windows: [
+                            WorkspaceMiniWindowManifest(
+                                id: "win-1",
+                                tabs: [
+                                    WorkspaceTabManifest(id: "term-1", title: "Web", type: .terminal, command: ["/bin/zsh"], workingDirectory: "/repo/apps/web"),
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            ),
+            "ops": WorkspaceManifest(
+                id: "ops",
+                name: "Ops",
+                version: 1,
+                columns: [
+                    WorkspaceColumnManifest(
+                        id: "col-2",
+                        windows: [
+                            WorkspaceMiniWindowManifest(
+                                id: "win-2",
+                                tabs: [
+                                    WorkspaceTabManifest(id: "term-2", title: "Logs", type: .terminal, command: ["/bin/bash"], workingDirectory: "/infra"),
+                                ]
+                            )
+                        ]
+                    )
+                ]
+            ),
+        ]
+    )
+
+    let snapshots = [
+        "term-1": TerminalPaneRuntimeState(
+            paneID: "term-1",
+            workspaceID: "shipyard",
+            command: ["/bin/zsh", "-i"],
+            workingDirectory: "/repo/apps/web",
+            currentDirectory: "/repo/apps/web",
+            gitBranch: "main",
+            activeCommand: "pnpm run dev",
+            recentCommands: ["pnpm run dev"],
+            isRunning: true,
+            lastMessage: "pnpm run dev"
+        ),
+        "term-2": TerminalPaneRuntimeState(
+            paneID: "term-2",
+            workspaceID: "ops",
+            command: ["/bin/bash", "-i"],
+            workingDirectory: "/infra",
+            currentDirectory: "/infra",
+            gitBranch: nil,
+            activeCommand: nil,
+            recentCommands: [],
+            isRunning: false,
+            lastMessage: "Exited (0)",
+            exitCode: 0
+        ),
+    ]
+
+    let panel = TerminalRuntimePanelPresentation.build(
+        layoutState: layoutState,
+        snapshotsByPaneID: snapshots
+    )
+
+    #expect(panel.liveCount == 1)
+    #expect(panel.readyCount == 0)
+    #expect(panel.stoppedCount == 1)
+    #expect(panel.entries.first?.paneID == "term-1")
+    #expect(panel.entries.first?.activityLabel == "pnpm run dev")
+    #expect(panel.entries.first?.branchLabel == "main")
+    #expect(panel.entries.first?.directoryLabel == "apps/web")
+}
