@@ -361,6 +361,7 @@ struct AppShellView: View {
 
                 GlobalTaskRunnerSectionView(
                     snapshot: globalTaskRunner.snapshot,
+                    composeRuntimeSnapshot: globalTaskRunner.runtimeSnapshot,
                     activeWorkspaceID: layoutState.activeWorkspaceID,
                     terminalRuntime: terminalRuntime,
                     onRunTask: runTask
@@ -846,6 +847,7 @@ struct WorkspaceSidebarCardView: View {
 
 struct GlobalTaskRunnerSectionView: View {
     let snapshot: GlobalTaskRunnerSnapshot
+    let composeRuntimeSnapshot: ComposeRuntimeSnapshot
     let activeWorkspaceID: String?
     @ObservedObject var terminalRuntime: TerminalRuntimeViewModel
     let onRunTask: (DeveloperTask, DeveloperTerminalTaskCatalog) -> Void
@@ -891,6 +893,7 @@ struct GlobalTaskRunnerSectionView: View {
                         catalog: catalog,
                         isActiveWorkspace: catalog.context.workspaceID == activeWorkspaceID,
                         runtimeSnapshot: terminalRuntime.snapshotsByPaneID[catalog.context.paneID],
+                        composeRuntime: composeRuntimeSnapshot.catalog(for: catalog.context.paneID),
                         requiresManualStart: terminalRuntime.requiresManualStart(paneID: catalog.context.paneID),
                         onRunTask: { task in
                             onRunTask(task, catalog)
@@ -1100,6 +1103,7 @@ struct TerminalTaskCatalogCardView: View {
     let catalog: DeveloperTerminalTaskCatalog
     let isActiveWorkspace: Bool
     let runtimeSnapshot: TerminalPaneRuntimeState?
+    let composeRuntime: ComposeRuntimeCatalog?
     let requiresManualStart: Bool
     let onRunTask: (DeveloperTask) -> Void
 
@@ -1146,6 +1150,34 @@ struct TerminalTaskCatalogCardView: View {
                             .padding(.vertical, 5)
                             .background(Color.white.opacity(0.07))
                             .clipShape(Capsule())
+                    }
+                }
+            }
+
+            if let composeRuntime {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Compose Runtime")
+                            .font(.caption.weight(.semibold))
+                        Spacer(minLength: 8)
+                        Text(composeRuntime.statusSummary)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let error = composeRuntime.lastError, !error.isEmpty {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .lineLimit(2)
+                    } else if !composeRuntime.services.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(composeRuntime.services) { service in
+                                    ComposeServiceBadgeView(service: service)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1224,6 +1256,56 @@ struct TerminalTaskCatalogCardView: View {
         }
 
         return .secondary
+    }
+}
+
+struct ComposeServiceBadgeView: View {
+    let service: ComposeServiceRuntime
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+                Text(service.serviceName)
+                    .font(.caption2.weight(.semibold))
+                Text(service.state.label)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            if let health = service.health {
+                Text(health)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            if let portsDescription = service.portsDescription {
+                Text(portsDescription)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var statusColor: Color {
+        switch service.state {
+        case .running:
+            return .green
+        case .restarting:
+            return .yellow
+        case .paused:
+            return .orange
+        case .stopped:
+            return .secondary
+        case .unknown:
+            return .gray
+        }
     }
 }
 

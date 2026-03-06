@@ -106,6 +106,8 @@ struct DeveloperTerminalTaskCatalog: Identifiable, Equatable, Sendable {
     let repositoryName: String
     let repositoryRoot: String
     let relativeDirectoryLabel: String
+    let composeFileName: String?
+    let composeServices: [String]
     let capabilities: [DeveloperCapability]
     let tasks: [DeveloperTask]
 
@@ -188,6 +190,8 @@ struct GlobalTaskDiscoveryService: Sendable {
 
         var capabilities: [DeveloperCapability] = []
         var tasks: [DeveloperTask] = []
+        var composeManifestFileName: String?
+        var composeServices: [String] = []
 
         let packageJSONPath = appending("package.json", to: repositoryRoot)
         if fileSystem.fileExists(at: packageJSONPath) {
@@ -205,9 +209,11 @@ struct GlobalTaskDiscoveryService: Sendable {
             tasks.append(contentsOf: packageDiscovery.tasks)
         }
 
-        if let composeFileName = composeFileName(in: repositoryRoot) {
+        if let detectedComposeFileName = composeFileName(in: repositoryRoot) {
             capabilities.append(.dockerCompose)
-            tasks.append(contentsOf: discoverComposeTasks(repositoryRoot: repositoryRoot, composeFileName: composeFileName))
+            composeManifestFileName = detectedComposeFileName
+            composeServices = composeServiceNames(composePath: appending(detectedComposeFileName, to: repositoryRoot))
+            tasks.append(contentsOf: discoverComposeTasks(repositoryRoot: repositoryRoot, composeFileName: detectedComposeFileName))
         } else if fileSystem.fileExists(at: appending("Dockerfile", to: repositoryRoot)) {
             capabilities.append(.dockerfile)
         }
@@ -260,6 +266,8 @@ struct GlobalTaskDiscoveryService: Sendable {
             repositoryName: repositoryName,
             repositoryRoot: repositoryRoot,
             relativeDirectoryLabel: relativeDirectoryLabel,
+            composeFileName: composeManifestFileName,
+            composeServices: composeServices,
             capabilities: capabilities,
             tasks: tasks.sorted(by: taskOrdering)
         )
@@ -599,12 +607,18 @@ struct GlobalTaskDiscoveryService: Sendable {
 @MainActor
 final class GlobalTaskRunnerViewModel: ObservableObject {
     @Published private(set) var snapshot = GlobalTaskRunnerSnapshot.empty
+    @Published private(set) var runtimeSnapshot = ComposeRuntimeSnapshot.empty
 
     private let discovery: GlobalTaskDiscoveryService
+    private let runtimeInspector: ComposeRuntimeInspectionService
     private var refreshTask: Task<Void, Never>?
 
-    init(discovery: GlobalTaskDiscoveryService = .init()) {
+    init(
+        discovery: GlobalTaskDiscoveryService = .init(),
+        runtimeInspector: ComposeRuntimeInspectionService = .init()
+    ) {
         self.discovery = discovery
+        self.runtimeInspector = runtimeInspector
     }
 
     deinit {
@@ -614,9 +628,13 @@ final class GlobalTaskRunnerViewModel: ObservableObject {
     func refresh(layoutState: WorkspaceLayoutState) {
         refreshTask?.cancel()
         let discovery = self.discovery
+        let runtimeInspector = self.runtimeInspector
         refreshTask = Task {
             let snapshot = await Task.detached(priority: .utility) {
                 discovery.snapshot(from: layoutState)
+            }.value
+            let runtimeSnapshot = await Task.detached(priority: .utility) {
+                await runtimeInspector.inspect(catalogs: snapshot.catalogs)
             }.value
 
             guard !Task.isCancelled else {
@@ -624,6 +642,7 @@ final class GlobalTaskRunnerViewModel: ObservableObject {
             }
 
             self.snapshot = snapshot
+            self.runtimeSnapshot = runtimeSnapshot
         }
     }
 }

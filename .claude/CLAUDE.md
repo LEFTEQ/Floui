@@ -47,7 +47,11 @@
 
 - `Sources/FlouiApp/GlobalTaskRunner.swift`
   - Reusable repository-discovery and quick-run orchestration for dev workflows.
-  - Includes `GlobalTaskDiscoveryService`, `GlobalTaskRunnerViewModel`, terminal-context modeling, package-script/docker/make/swift/Xcode detection, and deterministic quick-run command dispatch assumptions.
+  - Includes `GlobalTaskDiscoveryService`, `GlobalTaskRunnerViewModel`, terminal-context modeling, package-script/docker/make/swift/Xcode detection, Docker Compose manifest/service discovery, and deterministic quick-run command dispatch assumptions.
+
+- `Sources/FlouiApp/RuntimeInspector.swift`
+  - Reusable runtime inspection layer for external developer tooling state.
+  - Includes `ComposeRuntimeInspectionService`, `ComposeRuntimeSnapshot`, and Docker Compose service-state parsing from `docker compose ps --format json` output so the task runner sidebar can show live runtime status without embedding process logic in SwiftUI views.
 
 - `Sources/BrowserOrchestrator/BrowserOrchestrator.swift`
   - Browser layout planning/orchestration and concrete integration adapters.
@@ -72,6 +76,7 @@
 - CDP event ingestion should map through `DevToolsStatusEventMapper` before touching pill store state.
 - UI chrome should derive counts, tone, and relative-time labels from `AppShellPresentation.swift`; avoid re-implementing workspace/pill formatting inside views.
 - Repo/task discovery should go through `GlobalTaskRunner.swift`; avoid ad-hoc filesystem parsing in SwiftUI views.
+- External runtime inspection such as Docker Compose state should go through `RuntimeInspector.swift`; avoid shelling out from SwiftUI views or mixing command parsing into presentation code.
 - Shell-aware terminal context should flow through `ShellIntegration.swift` and `TerminalIntegration.swift`; avoid parsing ad-hoc prompt text directly in views or reducers.
 - Transcript rendering/search/selection should go through `TerminalTextViews.swift`; avoid rebuilding custom transcript widgets in individual panes.
 - Runtime control actions should route through `TerminalRuntimeViewModel`; avoid sending raw terminal control sequences directly from SwiftUI views.

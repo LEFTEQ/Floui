@@ -277,6 +277,8 @@ func terminalRuntimePanelPresentationMatchesKnownTasks() {
             repositoryName: "repo",
             repositoryRoot: "/repo",
             relativeDirectoryLabel: "apps/web",
+            composeFileName: "docker-compose.yml",
+            composeServices: ["app"],
             capabilities: [.nodePackageScripts, .dockerCompose],
             tasks: [
                 DeveloperTask(

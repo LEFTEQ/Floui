@@ -49,6 +49,7 @@ This repository now contains a working iterative implementation of the architect
   - card-based workspace sidebar with per-workspace activity summaries
   - workspace cycling/focus reducer actions and tested presentation helpers for pill/workspace telemetry
   - global task runner sidebar for repo-aware package scripts, Docker Compose flows, Make targets, SwiftPM commands, and Xcode launch actions across terminal directories
+  - Docker Compose runtime inspection in the task runner sidebar, including per-service state, health, and published ports
   - live runtime sidebar for cross-workspace shell status, active commands, cwd, and branch context
 - Shell-aware terminal context:
   - interactive `zsh`/`bash` launches are instrumented so panes report cwd, git branch, running command, and prompt-ready transitions back into Floui
@@ -77,6 +78,7 @@ This repository now contains a working iterative implementation of the architect
 - Browser layouts also auto-apply on workspace activation, scope permission checks to the browsers actually used in the workspace, and focus the active browser tab when a matching URL is present.
 - The shell now highlights the focused mini-window, exposes workspace activity summaries, and keeps pill telemetry visible with progress and alert counts.
 - Terminal tabs can declare a `workingDirectory`; the sidebar task runner uses that context to discover scripts/containers and dispatch quick-run commands back into the matching shell.
+- The task runner also inspects `docker compose ps --format json` for detected repos so service health and running/stopped state stay visible beside discovered compose actions.
 - The live runtime rail now classifies matched repo tasks versus docker/manual commands and exposes stop/rerun actions per pane.
 - Terminal panes expose searchable selectable scrollback, copy/paste helpers, recent command chips, and interrupt/rerun actions, but this is still not a full Warp/VS Code-class terminal emulator yet.
 
@@ -88,6 +90,7 @@ This repository now contains a working iterative implementation of the architect
 - `Sources/TerminalHost`: terminal engines, session manager, status emitter.
 - `Sources/BrowserOrchestrator`: browser layout/orchestration + adapters.
 - `Sources/FlouiApp`: SwiftUI macOS shell.
+- `Sources/FlouiApp/RuntimeInspector.swift`: shared runtime inspection services for external dev tooling state such as Docker Compose.
 - `Sources/floui-cli`: wrapper command for structured task events.
 - `Tests/*`: core, integration, hybrid E2E, and real E2E test suites.
 - `scripts/*`: local xcodebuild gates.

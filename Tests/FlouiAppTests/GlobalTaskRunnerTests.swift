@@ -106,6 +106,8 @@ func globalTaskRunnerDiscoversRepositoryTasks() throws {
     #expect(catalog.repositoryName == "shipyard")
     #expect(catalog.repositoryRoot == "/repo")
     #expect(catalog.relativeDirectoryLabel == "apps/web")
+    #expect(catalog.composeFileName == "docker-compose.yml")
+    #expect(catalog.composeServices == ["app", "db"])
     #expect(catalog.capabilities.contains(.nodePackageScripts))
     #expect(catalog.capabilities.contains(.dockerCompose))
     #expect(catalog.capabilities.contains(.makefile))
