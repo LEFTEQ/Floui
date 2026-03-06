@@ -18,6 +18,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/jpsim/Yams.git", from: "6.0.1"),
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", exact: "2.9.0"),
     ],
     targets: [
         .target(name: "FlouiCore"),
@@ -53,6 +54,7 @@ let package = Package(
                 "TerminalHost",
                 "BrowserOrchestrator",
                 "Permissions",
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/FlouiApp"
         ),

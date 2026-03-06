@@ -31,6 +31,7 @@ done
 load_release_env "$CONFIG_FILE"
 
 ensure_command swift
+ensure_command ditto
 
 RELEASE_VERSION="$(resolve_release_version)"
 BUILD_NUMBER="$(resolve_build_number)"
@@ -48,14 +49,20 @@ fi
 RELEASE_BINARY_PATH="$(resolve_release_binary_path)"
 
 rm -rf "$APP_PATH"
-mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
+mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources" "$APP_PATH/Contents/Frameworks"
 cp "$RELEASE_BINARY_PATH" "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME"
 chmod 755 "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME"
+ensure_binary_rpath "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME" "@executable_path/../Frameworks"
 write_info_plist "$APP_PATH/Contents/Info.plist" "$RELEASE_VERSION" "$BUILD_NUMBER"
 printf 'APPL????' >"$APP_PATH/Contents/PkgInfo"
 
 if [[ -n "${FLOUI_APP_ICON_PATH:-}" ]]; then
   cp "$FLOUI_APP_ICON_PATH" "$APP_PATH/Contents/Resources/$(resolve_app_name).icns"
+fi
+
+if SPARKLE_FRAMEWORK_PATH="$(resolve_sparkle_framework_path "$RELEASE_BINARY_PATH")"; then
+  rm -rf "$APP_PATH/Contents/Frameworks/Sparkle.framework"
+  ditto "$SPARKLE_FRAMEWORK_PATH" "$APP_PATH/Contents/Frameworks/Sparkle.framework"
 fi
 
 if [[ -z "${FLOUI_APPCAST_URL:-}" || -z "${FLOUI_SUPUBLIC_ED_KEY:-}" ]]; then

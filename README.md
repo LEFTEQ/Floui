@@ -49,6 +49,7 @@ This repository now contains a working iterative implementation of the architect
 - Local `xcodebuild` test scripts aligned to TDD flow
 - Release hardening scaffolding:
   - deterministic `.app` bundle generation around the SwiftPM release binary
+  - embedded Sparkle updater runtime for bundled releases
   - Developer ID signing / notarization / artifact packaging scripts
   - Sparkle-compatible bundle metadata + appcast generation hook
 
@@ -92,6 +93,8 @@ export FLOUI_STATUS_FILE="$HOME/Library/Application Support/Floui/status-events.
 swift run FlouiApp
 ```
 
+`swift run FlouiApp` intentionally keeps the updater disabled because Sparkle only runs correctly from a bundled `.app` with release metadata.
+
 ## Run CLI Wrapper
 
 ```bash
@@ -120,4 +123,4 @@ FLOUI_REAL_E2E=1 ./scripts/test-e2e-real
 - Safari support is launch/tile/script oriented.
 - Chrome/Brave support CDP target lifecycle ingestion via `URLSessionCDPClient` + `ChromiumDevToolsAdapter`.
 - Direct notarized distribution is now scaffolded via the release scripts documented in [docs/release.md](/Users/lukaspribik/Documents/Work/Floui/docs/release.md).
-- Full in-app updater embedding still needs the final updater library/runtime integration on top of the generated bundle flow.
+- Bundled releases expose a real Sparkle-backed update flow via `Check for Updates…` and the app settings window.

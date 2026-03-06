@@ -123,6 +123,48 @@ resolve_release_binary_path() {
   exit 1
 }
 
+resolve_release_binary_dir() {
+  local binary_path="${1:-}"
+  if [[ -z "$binary_path" ]]; then
+    binary_path="$(resolve_release_binary_path)"
+  fi
+
+  dirname "$binary_path"
+}
+
+resolve_sparkle_framework_path() {
+  local binary_path="${1:-}"
+  local binary_dir
+  binary_dir="$(resolve_release_binary_dir "$binary_path")"
+
+  if [[ -d "$binary_dir/Sparkle.framework" ]]; then
+    printf '%s/Sparkle.framework' "$binary_dir"
+    return 0
+  fi
+
+  local artifact_path="$ROOT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+  if [[ -d "$artifact_path" ]]; then
+    printf '%s' "$artifact_path"
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_binary_rpath() {
+  local binary_path="$1"
+  local rpath="$2"
+
+  ensure_command otool
+  ensure_command install_name_tool
+
+  if otool -l "$binary_path" | grep -Fq "path $rpath "; then
+    return 0
+  fi
+
+  install_name_tool -add_rpath "$rpath" "$binary_path"
+}
+
 write_info_plist() {
   local plist_path="$1"
   local release_version="$2"

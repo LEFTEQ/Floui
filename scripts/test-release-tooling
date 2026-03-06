@@ -39,6 +39,12 @@ ZIP_PATH="$OUTPUT_DIR/Floui-0.1.0.zip"
 [[ -x "$APP_PATH/Contents/MacOS/FlouiApp" ]]
 [[ -f "$PLIST_PATH" ]]
 [[ -f "$ZIP_PATH" ]]
+[[ -d "$APP_PATH/Contents/Frameworks/Sparkle.framework" ]]
+[[ -d "$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app" ]]
+[[ -d "$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc" ]]
+
+otool -L "$APP_PATH/Contents/MacOS/FlouiApp" | grep -Fqx $'\t@rpath/Sparkle.framework/Versions/B/Sparkle (compatibility version 1.6.0, current version 2.9.0)'
+otool -l "$APP_PATH/Contents/MacOS/FlouiApp" | grep -Fq 'path @executable_path/../Frameworks '
 
 /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST_PATH" | grep -qx 'com.floui.test'
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST_PATH" | grep -qx '0.1.0'

@@ -17,6 +17,8 @@ struct FlouiAppMain: App {
     @State private var didBootstrapState = false
     @State private var didStartStatusIngestion = false
     @State private var didRestorePersistedSession = false
+    @State private var didStartUpdater = false
+    @StateObject private var updaterController = AppUpdaterController()
 
     private let permissionController = PermissionOnboardingController(checker: MacPermissionChecker())
     private let workspaceStateStore = JSONWorkspaceStateStore()
@@ -49,6 +51,16 @@ struct FlouiAppMain: App {
                 didStartStatusIngestion = true
                 await runStatusIngestionLoop()
             }
+            .task {
+                guard !didStartUpdater else {
+                    return
+                }
+
+                didStartUpdater = true
+                await MainActor.run {
+                    updaterController.startIfNeeded()
+                }
+            }
             .onChange(of: layoutState) { _, updated in
                 guard didBootstrapState else {
                     return
@@ -73,6 +85,17 @@ struct FlouiAppMain: App {
             }
         }
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updaterController.checkForUpdates()
+                }
+                .disabled(!updaterController.state.canCheckForUpdates)
+            }
+        }
+        Settings {
+            UpdaterSettingsView(updaterController: updaterController)
+        }
     }
 
     private func bootstrap() async {

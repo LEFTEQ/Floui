@@ -37,6 +37,45 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
+SPARKLE_FRAMEWORK_PATH="$APP_PATH/Contents/Frameworks/Sparkle.framework"
+if [[ -d "$SPARKLE_FRAMEWORK_PATH/Versions/B/XPCServices" ]]; then
+  while IFS= read -r service_path; do
+    codesign \
+      --force \
+      --options runtime \
+      --timestamp \
+      --sign "$FLOUI_CODESIGN_IDENTITY" \
+      "$service_path"
+  done < <(find "$SPARKLE_FRAMEWORK_PATH/Versions/B/XPCServices" -maxdepth 1 -mindepth 1 -name '*.xpc' | sort)
+fi
+
+if [[ -d "$SPARKLE_FRAMEWORK_PATH/Versions/B/Updater.app" ]]; then
+  codesign \
+    --force \
+    --options runtime \
+    --timestamp \
+    --sign "$FLOUI_CODESIGN_IDENTITY" \
+    "$SPARKLE_FRAMEWORK_PATH/Versions/B/Updater.app"
+fi
+
+if [[ -f "$SPARKLE_FRAMEWORK_PATH/Versions/B/Autoupdate" ]]; then
+  codesign \
+    --force \
+    --options runtime \
+    --timestamp \
+    --sign "$FLOUI_CODESIGN_IDENTITY" \
+    "$SPARKLE_FRAMEWORK_PATH/Versions/B/Autoupdate"
+fi
+
+if [[ -d "$SPARKLE_FRAMEWORK_PATH" ]]; then
+  codesign \
+    --force \
+    --options runtime \
+    --timestamp \
+    --sign "$FLOUI_CODESIGN_IDENTITY" \
+    "$SPARKLE_FRAMEWORK_PATH"
+fi
+
 codesign \
   --force \
   --options runtime \
@@ -45,5 +84,5 @@ codesign \
   --sign "$FLOUI_CODESIGN_IDENTITY" \
   "$APP_PATH"
 
-codesign --verify --strict --verbose=2 "$APP_PATH"
+codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 print_release_summary "$APP_PATH"

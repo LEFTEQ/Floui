@@ -1,6 +1,6 @@
 # Release Workflow
 
-Floui currently develops as a Swift Package, but release distribution is prepared as a notarized `.app` bundle built around the release executable.
+Floui currently develops as a Swift Package, but release distribution is prepared as a notarized `.app` bundle built around the release executable and bundled Sparkle updater runtime.
 
 ## Why This Flow Exists
 
@@ -12,8 +12,8 @@ Floui currently develops as a Swift Package, but release distribution is prepare
 
 - `config/release/release.env.example`: release configuration template
 - `config/release/Floui.entitlements`: hardened runtime entitlements
-- `scripts/build-release-bundle`: builds `.app` from the release executable
-- `scripts/sign-release-bundle`: applies Developer ID signing
+- `scripts/build-release-bundle`: builds `.app` from the release executable, embeds `Sparkle.framework`, and fixes the app rpath
+- `scripts/sign-release-bundle`: applies Developer ID signing, including Sparkle's nested updater helpers
 - `scripts/package-release`: creates zip and optional DMG artifacts
 - `scripts/notarize-release`: submits artifacts through `notarytool` and staples
 - `scripts/generate-appcast`: runs Sparkle's `generate_appcast` if available
@@ -45,6 +45,7 @@ Then provide real values for:
 ```
 
 This builds a release executable, wraps it into `Floui.app`, creates a zip artifact, and validates the generated `Info.plist`.
+It also verifies that Sparkle is embedded into `Contents/Frameworks` and that the app executable can resolve it from the bundle.
 
 ## Typical Release
 
@@ -64,6 +65,6 @@ Or, if all credentials and Sparkle tooling are ready:
 
 ## Current Constraints
 
-- Sparkle-compatible metadata is written into the bundle, but the in-app updater UI is not embedded yet.
+- `swift run FlouiApp` intentionally does not start Sparkle because update checks only make sense from a bundled `.app` with release metadata.
 - `generate_appcast` must come from a local Sparkle installation or an explicitly configured path.
 - Real signing and notarization still require Apple Developer credentials on the machine performing the release.
