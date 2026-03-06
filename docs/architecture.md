@@ -33,6 +33,8 @@
 
 `BrowserWorkspaceOrchestrator` applies workspace browser plans through adapters.
 `BrowserRecoveryAdvisor` maps orchestration failures into actionable recovery steps for UI.
+- `BrowserLayoutBuilder` derives window bounds from the workspace column/window graph using a deterministic canvas layout context.
+- `BrowserAutoApplyCoordinator` caches the last applied workspace layout and skips identical reapplications while still allowing forced retries.
 
 ### DevTools
 

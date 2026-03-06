@@ -28,6 +28,7 @@
   - Browser layout planning/orchestration and concrete integration adapters.
   - Includes `ChromiumDevToolsAdapter` target lifecycle cache and `URLSessionCDPClient`.
   - Includes `CocoaAppleEventClient`, `BrowserOrchestrationError`, and `BrowserRecoveryAdvisor` for actionable browser recovery UX.
+  - Includes `BrowserCanvasLayoutContext`, graph-derived `BrowserLayoutBuilder`, and `BrowserAutoApplyCoordinator` for deterministic browser tiling and cached auto-apply behavior.
 
 - `Sources/Permissions/Permissions.swift`
   - Permission onboarding state machine, checker, and health evaluator/reporting.

@@ -10,9 +10,14 @@ actor RecordingBrowserAdapter: BrowserAdapter {
     var launches: [BrowserLaunchRequest] = []
     var boundsUpdates: [(BrowserWindowID, FlouiRect)] = []
     var openDevToolsCalls: [BrowserTabID] = []
+    var focusCalls: [BrowserTabID] = []
+    var windowsToReturn: [BrowserWindow]
+    var tabsToReturn: [BrowserTab]
 
     init(kind: BrowserKind) {
         self.kind = kind
+        self.windowsToReturn = [BrowserWindow(id: BrowserWindowID("window-1"), title: "Main", bounds: FlouiRect(x: 0, y: 0, width: 800, height: 600))]
+        self.tabsToReturn = [BrowserTab(id: BrowserTabID("tab-1"), title: "Tab", url: "https://example.com", index: 0)]
     }
 
     func launch(_ request: BrowserLaunchRequest) async throws {
@@ -20,7 +25,7 @@ actor RecordingBrowserAdapter: BrowserAdapter {
     }
 
     func listWindows() async throws -> [BrowserWindow] {
-        [BrowserWindow(id: BrowserWindowID("window-1"), title: "Main", bounds: FlouiRect(x: 0, y: 0, width: 800, height: 600))]
+        windowsToReturn
     }
 
     func setWindowBounds(windowID: BrowserWindowID, bounds: FlouiRect) async throws {
@@ -28,10 +33,12 @@ actor RecordingBrowserAdapter: BrowserAdapter {
     }
 
     func listTabs(windowID _: BrowserWindowID) async throws -> [BrowserTab] {
-        [BrowserTab(id: BrowserTabID("tab-1"), title: "Tab", url: "https://example.com", index: 0)]
+        tabsToReturn
     }
 
-    func focusTab(tabID _: BrowserTabID) async throws {}
+    func focusTab(tabID: BrowserTabID) async throws {
+        focusCalls.append(tabID)
+    }
 
     func openDevTools(tabID: BrowserTabID) async throws {
         openDevToolsCalls.append(tabID)
@@ -153,6 +160,8 @@ func browserLayoutBuilderFromManifest() {
     #expect(layout.plans[0].browser == .chrome)
     #expect(layout.plans[0].profileName == "floui-dev")
     #expect(layout.plans[0].remoteDebuggingPort == 9222)
+    #expect(layout.plans[0].sourceColumnID == "col-1")
+    #expect(layout.plans[0].sourceWindowID == "win-1")
 }
 
 @Test("Browser layout builder falls back to default chromium debugging port")
@@ -181,6 +190,76 @@ func browserLayoutBuilderDefaultRemotePort() {
     #expect(layout.plans[0].remoteDebuggingPort == 9222)
 }
 
+@Test("Browser layout builder derives per-column and per-window bounds from workspace graph")
+func browserLayoutBuilderDerivesWindowBounds() {
+    let manifest = WorkspaceManifest(
+        id: "w1",
+        name: "Workspace",
+        version: 1,
+        columns: [
+            WorkspaceColumnManifest(
+                id: "left",
+                width: 300,
+                windows: [
+                    WorkspaceMiniWindowManifest(
+                        id: "left-top",
+                        tabs: [
+                            WorkspaceTabManifest(id: "term-1", title: "Term", type: .terminal),
+                        ]
+                    ),
+                    WorkspaceMiniWindowManifest(
+                        id: "left-bottom",
+                        activeTabID: "chrome-2",
+                        tabs: [
+                            WorkspaceTabManifest(id: "chrome-2", title: "Docs", type: .browser, browser: .chrome, url: "https://docs.example"),
+                        ]
+                    ),
+                ]
+            ),
+            WorkspaceColumnManifest(
+                id: "right",
+                width: 900,
+                windows: [
+                    WorkspaceMiniWindowManifest(
+                        id: "right-main",
+                        activeTabID: "chrome-1",
+                        tabs: [
+                            WorkspaceTabManifest(id: "chrome-1", title: "App", type: .browser, browser: .chrome, url: "https://app.example"),
+                            WorkspaceTabManifest(id: "chrome-1b", title: "Admin", type: .browser, browser: .chrome, url: "https://admin.example"),
+                        ]
+                    )
+                ]
+            ),
+        ]
+    )
+
+    let layout = BrowserLayoutBuilder.fromManifest(
+        manifest,
+        canvas: BrowserCanvasLayoutContext(
+            bounds: FlouiRect(x: 0, y: 0, width: 1220, height: 900),
+            columnSpacing: 20,
+            windowSpacing: 10,
+            fallbackColumnWidth: 420
+        )
+    )
+
+    #expect(layout.plans.count == 2)
+
+    let leftPlan = layout.plans.first(where: { $0.sourceWindowID == "left-bottom" })
+    #expect(leftPlan?.bounds.x == 0)
+    #expect(leftPlan?.bounds.y == 455)
+    #expect(leftPlan?.bounds.width == 300)
+    #expect(leftPlan?.bounds.height == 445)
+    #expect(leftPlan?.preferredTabURL == "https://docs.example")
+
+    let rightPlan = layout.plans.first(where: { $0.sourceWindowID == "right-main" })
+    #expect(rightPlan?.bounds.x == 320)
+    #expect(rightPlan?.bounds.y == 0)
+    #expect(rightPlan?.bounds.width == 900)
+    #expect(rightPlan?.bounds.height == 900)
+    #expect(rightPlan?.preferredTabURL == "https://app.example")
+}
+
 @Test("Orchestrator launches and tiles browser windows")
 func orchestratorAppliesPlan() async throws {
     let chrome = RecordingBrowserAdapter(kind: .chrome)
@@ -191,10 +270,13 @@ func orchestratorAppliesPlan() async throws {
         workspaceID: "w1",
         plans: [
             BrowserWindowPlan(
+                sourceColumnID: "col-1",
+                sourceWindowID: "win-1",
                 browser: .chrome,
                 profileName: "floui-dev",
                 urls: ["https://example.com"],
                 bounds: FlouiRect(x: 0, y: 0, width: 1200, height: 900),
+                preferredTabURL: "https://example.com",
                 openDevToolsForFirstTab: true,
                 remoteDebuggingPort: 9444
             )
@@ -206,11 +288,14 @@ func orchestratorAppliesPlan() async throws {
     let launches = await chrome.launches
     let boundsUpdates = await chrome.boundsUpdates
     let devToolsCalls = await chrome.openDevToolsCalls
+    let focusCalls = await chrome.focusCalls
 
     #expect(launches.count == 1)
     #expect(launches.first?.remoteDebuggingPort == 9444)
     #expect(boundsUpdates.count == 1)
     #expect(devToolsCalls.count == 1)
+    #expect(focusCalls.count == 1)
+    #expect(focusCalls.first == BrowserTabID("tab-1"))
 }
 
 @Test("Orchestrator uses about:blank fallback when no URLs provided")
@@ -221,10 +306,13 @@ func orchestratorUsesAboutBlankFallback() async throws {
         workspaceID: "w1",
         plans: [
             BrowserWindowPlan(
+                sourceColumnID: "col-1",
+                sourceWindowID: "win-1",
                 browser: .chrome,
                 profileName: "floui-dev",
                 urls: [],
                 bounds: FlouiRect(x: 0, y: 0, width: 1200, height: 900),
+                preferredTabURL: nil,
                 openDevToolsForFirstTab: false,
                 remoteDebuggingPort: 9222
             )
@@ -295,10 +383,13 @@ func orchestratorWrapsAutomationFailures() async {
         workspaceID: "w1",
         plans: [
             BrowserWindowPlan(
+                sourceColumnID: "col-1",
+                sourceWindowID: "win-1",
                 browser: .chrome,
                 profileName: "floui-dev",
                 urls: ["https://example.com"],
                 bounds: FlouiRect(x: 0, y: 0, width: 1200, height: 900),
+                preferredTabURL: "https://example.com",
                 openDevToolsForFirstTab: true,
                 remoteDebuggingPort: 9222
             )
@@ -313,6 +404,38 @@ func orchestratorWrapsAutomationFailures() async {
     )) {
         try await orchestrator.apply(layout: layout)
     }
+}
+
+@Test("Browser auto-apply coordinator skips identical layouts and reapplies on force")
+func browserAutoApplyCoordinatorCachesLayout() async throws {
+    let chrome = RecordingBrowserAdapter(kind: .chrome)
+    let orchestrator = BrowserWorkspaceOrchestrator(adapters: [.chrome: chrome])
+    let coordinator = BrowserAutoApplyCoordinator(orchestrator: orchestrator)
+    let layout = BrowserWorkspaceLayout(
+        workspaceID: "w1",
+        plans: [
+            BrowserWindowPlan(
+                sourceColumnID: "col-1",
+                sourceWindowID: "win-1",
+                browser: .chrome,
+                profileName: "floui-dev",
+                urls: ["https://example.com"],
+                bounds: FlouiRect(x: 0, y: 0, width: 1200, height: 900),
+                preferredTabURL: "https://example.com",
+                openDevToolsForFirstTab: false,
+                remoteDebuggingPort: 9222
+            )
+        ]
+    )
+
+    let firstApplied = try await coordinator.applyIfNeeded(layout: layout)
+    let secondApplied = try await coordinator.applyIfNeeded(layout: layout)
+    try await coordinator.forceApply(layout: layout)
+
+    let launches = await chrome.launches
+    #expect(firstApplied)
+    #expect(secondApplied == false)
+    #expect(launches.count == 2)
 }
 
 @Test("Recovery advisor maps automation denial to actionable permissions steps")

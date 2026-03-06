@@ -26,6 +26,9 @@ This repository now contains a working iterative implementation of the architect
   - `about:blank` fallback when no browser URL is provided
   - safer AppleScript generation for tab creation and bounds targeting by window ID
   - recovery advisor and actionable permission/browser failure guidance
+  - bounded AppleScript execution via client-side timeout wrapping
+  - graph-derived browser tiling from workspace columns/windows
+  - auto-apply caching so identical workspace layouts do not relaunch browsers repeatedly
 - Ghostty abstraction + concrete runtime bridge (`GhosttyRuntimeBridge`) via dynamic `libghostty` C symbols
 - Terminal workspace runtime (`TerminalWorkspaceRuntime`) with pane lifecycle tracking for terminal tabs
   - `GhosttyFirstTerminalEngine` prefers Ghostty and falls back to external process sessions when `libghostty` is unavailable
@@ -48,6 +51,7 @@ This repository now contains a working iterative implementation of the architect
 - Terminal tabs are now live runtime panes backed by `TerminalWorkspaceRuntime` (session state + input forwarding).
 - Terminal startup now prefers Ghostty automatically and falls back to external shell execution when Ghostty is unavailable.
 - Browser orchestration can be triggered from the fixed-pill rail using `Apply Layout`; failures surface recovery steps in-app.
+- Browser layouts also auto-apply on workspace activation and focus the active browser tab when a matching URL is present.
 
 ## Project Layout
 

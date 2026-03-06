@@ -113,25 +113,34 @@ public enum BrowserRecoveryAdvisor {
 }
 
 public struct BrowserWindowPlan: Equatable, Sendable {
+    public var sourceColumnID: String
+    public var sourceWindowID: String
     public var browser: BrowserKind
     public var profileName: String
     public var urls: [String]
     public var bounds: FlouiRect
+    public var preferredTabURL: String?
     public var openDevToolsForFirstTab: Bool
     public var remoteDebuggingPort: Int?
 
     public init(
+        sourceColumnID: String,
+        sourceWindowID: String,
         browser: BrowserKind,
         profileName: String,
         urls: [String],
         bounds: FlouiRect,
+        preferredTabURL: String?,
         openDevToolsForFirstTab: Bool,
         remoteDebuggingPort: Int?
     ) {
+        self.sourceColumnID = sourceColumnID
+        self.sourceWindowID = sourceWindowID
         self.browser = browser
         self.profileName = profileName
         self.urls = urls
         self.bounds = bounds
+        self.preferredTabURL = preferredTabURL
         self.openDevToolsForFirstTab = openDevToolsForFirstTab
         self.remoteDebuggingPort = remoteDebuggingPort
     }
@@ -147,12 +156,40 @@ public struct BrowserWorkspaceLayout: Equatable, Sendable {
     }
 }
 
-public enum BrowserLayoutBuilder {
-    public static func fromManifest(_ manifest: WorkspaceManifest, defaultBounds: FlouiRect) -> BrowserWorkspaceLayout {
-        let profiles = Dictionary(uniqueKeysWithValues: manifest.browserProfiles.map { ($0.browser, $0) })
+public struct BrowserCanvasLayoutContext: Equatable, Sendable {
+    public var bounds: FlouiRect
+    public var columnSpacing: Double
+    public var windowSpacing: Double
+    public var fallbackColumnWidth: Double
+    public var minimumColumnWidth: Double
+    public var minimumWindowHeight: Double
 
-        let plans: [BrowserWindowPlan] = manifest.columns.flatMap { column in
-            column.windows.compactMap { window in
+    public init(
+        bounds: FlouiRect,
+        columnSpacing: Double = 16,
+        windowSpacing: Double = 12,
+        fallbackColumnWidth: Double = 420,
+        minimumColumnWidth: Double = 240,
+        minimumWindowHeight: Double = 180
+    ) {
+        self.bounds = bounds
+        self.columnSpacing = columnSpacing
+        self.windowSpacing = windowSpacing
+        self.fallbackColumnWidth = fallbackColumnWidth
+        self.minimumColumnWidth = minimumColumnWidth
+        self.minimumWindowHeight = minimumWindowHeight
+    }
+}
+
+public enum BrowserLayoutBuilder {
+    public static func fromManifest(_ manifest: WorkspaceManifest, canvas: BrowserCanvasLayoutContext) -> BrowserWorkspaceLayout {
+        let profiles = Dictionary(uniqueKeysWithValues: manifest.browserProfiles.map { ($0.browser, $0) })
+        let columnFrames = resolvedColumnFrames(in: manifest, canvas: canvas)
+
+        let plans: [BrowserWindowPlan] = manifest.columns.enumerated().flatMap { columnIndex, column in
+            let windowFrames = resolvedWindowFrames(in: column, columnFrame: columnFrames[columnIndex], canvas: canvas)
+
+            return column.windows.enumerated().compactMap { (windowIndex: Int, window: WorkspaceMiniWindowManifest) -> BrowserWindowPlan? in
                 let browserTabs = window.tabs.filter { $0.type == .browser }
                 guard !browserTabs.isEmpty else {
                     return nil
@@ -163,13 +200,17 @@ public enum BrowserLayoutBuilder {
                 let remoteDebuggingPort = browser == .safari ? nil : (profiles[browser]?.remoteDebuggingPort ?? 9222)
 
                 let urls = browserTabs.compactMap(\.url)
+                let preferredBrowserTab = browserTabs.first(where: { $0.id == window.activeTabID }) ?? browserTabs.first
                 let openDevTools = browser != .safari
 
                 return BrowserWindowPlan(
+                    sourceColumnID: column.id,
+                    sourceWindowID: window.id,
                     browser: browser,
                     profileName: profile,
                     urls: urls,
-                    bounds: defaultBounds,
+                    bounds: windowFrames[windowIndex],
+                    preferredTabURL: preferredBrowserTab?.url,
                     openDevToolsForFirstTab: openDevTools,
                     remoteDebuggingPort: remoteDebuggingPort
                 )
@@ -177,6 +218,63 @@ public enum BrowserLayoutBuilder {
         }
 
         return BrowserWorkspaceLayout(workspaceID: manifest.id, plans: plans)
+    }
+
+    public static func fromManifest(_ manifest: WorkspaceManifest, defaultBounds: FlouiRect) -> BrowserWorkspaceLayout {
+        fromManifest(manifest, canvas: BrowserCanvasLayoutContext(bounds: defaultBounds))
+    }
+
+    private static func resolvedColumnFrames(in manifest: WorkspaceManifest, canvas: BrowserCanvasLayoutContext) -> [FlouiRect] {
+        guard !manifest.columns.isEmpty else {
+            return []
+        }
+
+        let totalSpacing = canvas.columnSpacing * Double(max(manifest.columns.count - 1, 0))
+        let availableWidth = max(canvas.bounds.width - totalSpacing, canvas.minimumColumnWidth * Double(manifest.columns.count))
+        let requestedWidths = manifest.columns.map { max($0.width ?? canvas.fallbackColumnWidth, canvas.minimumColumnWidth) }
+        let requestedTotal = max(requestedWidths.reduce(0, +), 1)
+        let scale = availableWidth / requestedTotal
+
+        var frames: [FlouiRect] = []
+        var nextX = canvas.bounds.x
+
+        for requestedWidth in requestedWidths {
+            let width = max(canvas.minimumColumnWidth, requestedWidth * scale)
+            frames.append(FlouiRect(
+                x: nextX,
+                y: canvas.bounds.y,
+                width: width,
+                height: canvas.bounds.height
+            ))
+            nextX += width + canvas.columnSpacing
+        }
+
+        return frames
+    }
+
+    private static func resolvedWindowFrames(
+        in column: WorkspaceColumnManifest,
+        columnFrame: FlouiRect,
+        canvas: BrowserCanvasLayoutContext
+    ) -> [FlouiRect] {
+        guard !column.windows.isEmpty else {
+            return []
+        }
+
+        let totalSpacing = canvas.windowSpacing * Double(max(column.windows.count - 1, 0))
+        let availableHeight = max(columnFrame.height - totalSpacing, canvas.minimumWindowHeight * Double(column.windows.count))
+        let rawHeight = availableHeight / Double(column.windows.count)
+        let windowHeight = max(canvas.minimumWindowHeight, rawHeight)
+
+        return column.windows.enumerated().map { index, _ in
+            let y = columnFrame.y + Double(index) * (windowHeight + canvas.windowSpacing)
+            return FlouiRect(
+                x: columnFrame.x,
+                y: y,
+                width: columnFrame.width,
+                height: windowHeight
+            )
+        }
     }
 }
 
@@ -235,6 +333,16 @@ public actor BrowserWorkspaceOrchestrator {
                         throw wrap(error: error, browser: plan.browser, operation: "openDevTools")
                     }
                 }
+
+                if let preferredURL = plan.preferredTabURL,
+                   let preferredTab = tabs.first(where: { $0.url == preferredURL })
+                {
+                    do {
+                        try await adapter.focusTab(tabID: preferredTab.id)
+                    } catch {
+                        throw wrap(error: error, browser: plan.browser, operation: "focusTab")
+                    }
+                }
             }
         }
     }
@@ -253,6 +361,39 @@ public actor BrowserWorkspaceOrchestrator {
             code: nil,
             message: error.localizedDescription
         )
+    }
+}
+
+public actor BrowserAutoApplyCoordinator {
+    private let orchestrator: BrowserWorkspaceOrchestrator
+    private var lastAppliedLayoutByWorkspaceID: [String: BrowserWorkspaceLayout] = [:]
+
+    public init(orchestrator: BrowserWorkspaceOrchestrator) {
+        self.orchestrator = orchestrator
+    }
+
+    @discardableResult
+    public func applyIfNeeded(layout: BrowserWorkspaceLayout) async throws -> Bool {
+        if lastAppliedLayoutByWorkspaceID[layout.workspaceID] == layout {
+            return false
+        }
+
+        try await orchestrator.apply(layout: layout)
+        lastAppliedLayoutByWorkspaceID[layout.workspaceID] = layout
+        return true
+    }
+
+    public func forceApply(layout: BrowserWorkspaceLayout) async throws {
+        try await orchestrator.apply(layout: layout)
+        lastAppliedLayoutByWorkspaceID[layout.workspaceID] = layout
+    }
+
+    public func invalidate(workspaceID: String? = nil) {
+        if let workspaceID {
+            lastAppliedLayoutByWorkspaceID.removeValue(forKey: workspaceID)
+        } else {
+            lastAppliedLayoutByWorkspaceID.removeAll()
+        }
     }
 }
 

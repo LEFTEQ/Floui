@@ -176,8 +176,7 @@ struct AppShellView: View {
     let permissionController: PermissionOnboardingController
     private let permissionEvaluator = PermissionHealthEvaluator()
     @StateObject private var terminalRuntime = TerminalRuntimeViewModel()
-    @State private var browserRecoveryIssue: BrowserRecoveryIssue?
-    @State private var isApplyingBrowserLayout = false
+    @StateObject private var browserAutomation = BrowserAutomationController()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -206,12 +205,12 @@ struct AppShellView: View {
                 .background(Color.orange.opacity(0.16))
             }
 
-            if let browserRecoveryIssue {
+            if let browserRecoveryIssue = browserAutomation.recoveryIssue {
                 BrowserRecoveryBannerView(
                     issue: browserRecoveryIssue,
-                    isRetrying: isApplyingBrowserLayout,
-                    onRetry: applyBrowserLayout,
-                    onDismiss: { self.browserRecoveryIssue = nil }
+                    isRetrying: browserAutomation.isApplying,
+                    onRetry: { applyBrowserLayout(force: true) },
+                    onDismiss: { browserAutomation.recoveryIssue = nil }
                 )
                 .padding(10)
                 .background(Color.red.opacity(0.14))
@@ -229,6 +228,12 @@ struct AppShellView: View {
             .navigationSplitViewStyle(.balanced)
 
             shortcutHandlers
+        }
+        .task(id: activeWorkspaceTaskKey) {
+            guard let workspace = activeWorkspace else {
+                return
+            }
+            applyBrowserLayout(workspace: workspace, force: false)
         }
     }
 
@@ -255,11 +260,11 @@ struct AppShellView: View {
                     .font(.headline)
                     .padding(.horizontal, 8)
                 Spacer(minLength: 8)
-                Button(isApplyingBrowserLayout ? "Applying..." : "Apply Layout") {
-                    applyBrowserLayout()
+                Button(browserAutomation.isApplying ? "Applying..." : "Apply Layout") {
+                    applyBrowserLayout(force: true)
                 }
                 .buttonStyle(.bordered)
-                .disabled(isApplyingBrowserLayout || activeWorkspace == nil)
+                .disabled(browserAutomation.isApplying || activeWorkspace == nil)
             }
 
             let pills = activeWorkspace?.fixedPills ?? []
@@ -309,6 +314,14 @@ struct AppShellView: View {
         layoutState.activeWorkspaceID ?? "default"
     }
 
+    private var activeWorkspaceTaskKey: String {
+        guard let workspace = activeWorkspace else {
+            return "no-workspace"
+        }
+
+        return "\(workspace.id)-\(workspace.hashValue)"
+    }
+
     private var shortcutHandlers: some View {
         VStack(spacing: 0) {
             Button("Next Tab") {
@@ -333,42 +346,16 @@ struct AppShellView: View {
         WorkspaceLayoutReducer.reduce(state: &layoutState, action: .cycleTab(direction: direction))
     }
 
-    private func applyBrowserLayout() {
+    private func applyBrowserLayout(force: Bool) {
         guard let workspace = activeWorkspace else {
             return
         }
 
-        isApplyingBrowserLayout = true
-        browserRecoveryIssue = nil
+        applyBrowserLayout(workspace: workspace, force: force)
+    }
 
-        Task {
-            let appleEvents = CocoaAppleEventClient()
-            let adapters: [BrowserKind: BrowserAdapter] = [
-                .safari: AppleEventBrowserAdapter(kind: .safari, appleEvents: appleEvents),
-                .chrome: AppleEventBrowserAdapter(kind: .chrome, appleEvents: appleEvents),
-                .brave: AppleEventBrowserAdapter(kind: .brave, appleEvents: appleEvents),
-            ]
-
-            let orchestrator = BrowserWorkspaceOrchestrator(adapters: adapters)
-            let layout = BrowserLayoutBuilder.fromManifest(
-                workspace,
-                defaultBounds: FlouiRect(x: 80, y: 70, width: 1280, height: 860)
-            )
-
-            do {
-                try await orchestrator.apply(layout: layout)
-                await MainActor.run {
-                    isApplyingBrowserLayout = false
-                    browserRecoveryIssue = nil
-                }
-            } catch {
-                let issue = BrowserRecoveryAdvisor.advise(error: error)
-                await MainActor.run {
-                    isApplyingBrowserLayout = false
-                    browserRecoveryIssue = issue
-                }
-            }
-        }
+    private func applyBrowserLayout(workspace: WorkspaceManifest, force: Bool) {
+        browserAutomation.apply(workspace: workspace, force: force)
     }
 }
 
@@ -700,6 +687,72 @@ final class TerminalRuntimeViewModel: ObservableObject {
                 }
             }
             try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+    }
+}
+
+@MainActor
+final class BrowserAutomationController: ObservableObject {
+    @Published var recoveryIssue: BrowserRecoveryIssue?
+    @Published private(set) var isApplying = false
+
+    private let coordinator: BrowserAutoApplyCoordinator
+    private let canvas = BrowserCanvasLayoutContext(bounds: FlouiRect(x: 80, y: 70, width: 1280, height: 860))
+    private var applyTask: Task<Void, Never>?
+
+    init() {
+        let appleEvents = CocoaAppleEventClient()
+        let adapters: [BrowserKind: BrowserAdapter] = [
+            .safari: AppleEventBrowserAdapter(kind: .safari, appleEvents: appleEvents),
+            .chrome: AppleEventBrowserAdapter(kind: .chrome, appleEvents: appleEvents),
+            .brave: AppleEventBrowserAdapter(kind: .brave, appleEvents: appleEvents),
+        ]
+        let orchestrator = BrowserWorkspaceOrchestrator(adapters: adapters)
+        coordinator = BrowserAutoApplyCoordinator(orchestrator: orchestrator)
+    }
+
+    deinit {
+        applyTask?.cancel()
+    }
+
+    func apply(workspace: WorkspaceManifest, force: Bool) {
+        applyTask?.cancel()
+        let layout = BrowserLayoutBuilder.fromManifest(workspace, canvas: canvas)
+        guard !layout.plans.isEmpty else {
+            recoveryIssue = nil
+            isApplying = false
+            return
+        }
+
+        recoveryIssue = nil
+        isApplying = true
+
+        applyTask = Task { [coordinator] in
+            do {
+                if force {
+                    try await coordinator.forceApply(layout: layout)
+                } else {
+                    _ = try await coordinator.applyIfNeeded(layout: layout)
+                }
+
+                await MainActor.run {
+                    self.isApplying = false
+                    self.recoveryIssue = nil
+                }
+            } catch {
+                guard !Task.isCancelled else {
+                    await MainActor.run {
+                        self.isApplying = false
+                    }
+                    return
+                }
+
+                let issue = BrowserRecoveryAdvisor.advise(error: error)
+                await MainActor.run {
+                    self.isApplying = false
+                    self.recoveryIssue = issue
+                }
+            }
         }
     }
 }
