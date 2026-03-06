@@ -67,6 +67,8 @@
 
 - `TerminalWorkspaceRuntime` tracks per-pane terminal session lifecycle.
 - Terminal panes can be activated lazily from UI tabs, receive event snapshots, and accept input forwarding.
+- `GhosttyFirstTerminalEngine` is the default app-facing runtime choice: use Ghostty when its runtime bridge is available, otherwise fall back to external process-backed sessions.
+- External process sessions now emit stdout/stderr lines, accept stdin writes, surface resize status, and propagate exit codes into pane state.
 
 ## TDD Process
 

@@ -33,21 +33,43 @@ public final class GhosttyTerminalEngine: TerminalEngine,  Sendable {
 public actor ExternalTerminalEngine: TerminalEngine {
     private struct SessionRecord {
         var config: TerminalSessionConfig
+        var process: Process
+        var stdin: FileHandle
+        var stdout: FileHandle
+        var stderr: FileHandle
     }
 
-    private let runner: ProcessRunner
     private var sessions: [TerminalSessionID: SessionRecord] = [:]
     private var continuations: [TerminalSessionID: AsyncStream<TerminalEvent>.Continuation] = [:]
     private var streams: [TerminalSessionID: AsyncStream<TerminalEvent>] = [:]
 
-    public init(runner: ProcessRunner = FoundationProcessRunner()) {
-        self.runner = runner
-    }
+    public init() {}
 
     public func startSession(config: TerminalSessionConfig) async throws -> TerminalSessionID {
         guard let executable = config.shellCommand.first else {
             throw FlouiError.invalidInput("shellCommand must include executable")
         }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = Array(config.shellCommand.dropFirst())
+
+        if let workingDirectory = config.workingDirectory {
+            process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
+        }
+
+        var environment = ProcessInfo.processInfo.environment
+        for (key, value) in config.environment {
+            environment[key] = value
+        }
+        process.environment = environment
+
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardInput = inputPipe
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
 
         let sessionID = TerminalSessionID()
 
@@ -60,20 +82,44 @@ public actor ExternalTerminalEngine: TerminalEngine {
             throw FlouiError.operationFailed("failed to create stream continuation")
         }
 
-        sessions[sessionID] = SessionRecord(config: config)
+        sessions[sessionID] = SessionRecord(
+            config: config,
+            process: process,
+            stdin: inputPipe.fileHandleForWriting,
+            stdout: outputPipe.fileHandleForReading,
+            stderr: errorPipe.fileHandleForReading
+        )
         continuations[sessionID] = continuationBox
         streams[sessionID] = stream
 
-        let arguments = Array(config.shellCommand.dropFirst())
-
-        Task {
-            do {
-                let status = try await self.runner.run(executable, arguments, environment: config.environment)
-                self.emit(.processExited(status), for: sessionID)
-            } catch {
-                self.emit(.status("external-runner-error: \(error.localizedDescription)"), for: sessionID)
-                self.emit(.processExited(1), for: sessionID)
+        outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                return
             }
+            Task { await self?.emitOutput(data, for: sessionID) }
+        }
+
+        errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                return
+            }
+            Task { await self?.emitOutput(data, for: sessionID) }
+        }
+
+        process.terminationHandler = { [weak self] terminatedProcess in
+            Task { await self?.handleProcessTermination(sessionID: sessionID, status: terminatedProcess.terminationStatus) }
+        }
+
+        do {
+            try process.run()
+            emit(.status("external-session-started"), for: sessionID)
+        } catch {
+            outputPipe.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+            cleanupSession(sessionID: sessionID, finishStream: true)
+            throw FlouiError.operationFailed("failed to start external process: \(error.localizedDescription)")
         }
 
         return sessionID
@@ -85,18 +131,24 @@ public actor ExternalTerminalEngine: TerminalEngine {
         }
     }
 
-    public func sendInput(sessionID: TerminalSessionID, input _: String) async throws {
-        guard sessions[sessionID] != nil else {
+    public func sendInput(sessionID: TerminalSessionID, input: String) async throws {
+        guard let session = sessions[sessionID] else {
             throw FlouiError.notFound("session \(sessionID.rawValue)")
         }
 
-        emit(.status("input-ignored-external-engine"), for: sessionID)
+        do {
+            try session.stdin.write(contentsOf: Data(input.utf8))
+        } catch {
+            throw FlouiError.operationFailed("failed to write terminal input: \(error.localizedDescription)")
+        }
     }
 
-    public func resize(sessionID: TerminalSessionID, cols _: Int, rows _: Int) async throws {
+    public func resize(sessionID: TerminalSessionID, cols: Int, rows: Int) async throws {
         guard sessions[sessionID] != nil else {
             throw FlouiError.notFound("session \(sessionID.rawValue)")
         }
+
+        emit(.status("external-resize \(cols)x\(rows)"), for: sessionID)
     }
 
     public func subscribeEvents(sessionID: TerminalSessionID) async -> AsyncStream<TerminalEvent> {
@@ -104,6 +156,60 @@ public actor ExternalTerminalEngine: TerminalEngine {
             continuation.yield(.status("session-not-found"))
             continuation.finish()
         }
+    }
+
+    private func emitOutput(_ data: Data, for sessionID: TerminalSessionID) {
+        if let text = String(data: data, encoding: .utf8), !text.isEmpty {
+            emit(.output(text), for: sessionID)
+            return
+        }
+
+        let decoded = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+        if !decoded.isEmpty {
+            emit(.status("external-output-bytes: \(decoded)"), for: sessionID)
+        }
+    }
+
+    private func handleProcessTermination(sessionID: TerminalSessionID, status: Int32) {
+        guard let session = sessions[sessionID] else {
+            return
+        }
+
+        session.stdout.readabilityHandler = nil
+        session.stderr.readabilityHandler = nil
+
+        let remainingStdout = session.stdout.readDataToEndOfFile()
+        if !remainingStdout.isEmpty {
+            emitOutput(remainingStdout, for: sessionID)
+        }
+
+        let remainingStderr = session.stderr.readDataToEndOfFile()
+        if !remainingStderr.isEmpty {
+            emitOutput(remainingStderr, for: sessionID)
+        }
+
+        emit(.processExited(status), for: sessionID)
+    }
+
+    private func cleanupSession(sessionID: TerminalSessionID, finishStream: Bool) {
+        guard let session = sessions.removeValue(forKey: sessionID) else {
+            return
+        }
+
+        session.stdout.readabilityHandler = nil
+        session.stderr.readabilityHandler = nil
+        session.process.terminationHandler = nil
+
+        try? session.stdin.close()
+        try? session.stdout.close()
+        try? session.stderr.close()
+
+        if finishStream {
+            continuations[sessionID]?.finish()
+        }
+
+        continuations.removeValue(forKey: sessionID)
+        streams.removeValue(forKey: sessionID)
     }
 
     private func emit(_ event: TerminalEvent, for sessionID: TerminalSessionID) {
@@ -114,11 +220,110 @@ public actor ExternalTerminalEngine: TerminalEngine {
         continuation.yield(event)
 
         if case .processExited = event {
-            continuation.finish()
-            continuations.removeValue(forKey: sessionID)
-            streams.removeValue(forKey: sessionID)
-            sessions.removeValue(forKey: sessionID)
+            cleanupSession(sessionID: sessionID, finishStream: true)
         }
+    }
+}
+
+public actor GhosttyFirstTerminalEngine: TerminalEngine {
+    private enum EngineSelection {
+        case primary
+        case fallback
+    }
+
+    private let primary: TerminalEngine
+    private let fallback: TerminalEngine
+    private var sessionEngines: [TerminalSessionID: EngineSelection] = [:]
+    private var forceFallback = false
+
+    public init(
+        primary: TerminalEngine = GhosttyTerminalEngine(bridge: GhosttyRuntimeBridge()),
+        fallback: TerminalEngine = ExternalTerminalEngine()
+    ) {
+        self.primary = primary
+        self.fallback = fallback
+    }
+
+    public func startSession(config: TerminalSessionConfig) async throws -> TerminalSessionID {
+        if forceFallback {
+            let id = try await fallback.startSession(config: config)
+            sessionEngines[id] = .fallback
+            return id
+        }
+
+        do {
+            let id = try await primary.startSession(config: config)
+            sessionEngines[id] = .primary
+            return id
+        } catch {
+            guard shouldFallback(from: error) else {
+                throw error
+            }
+
+            forceFallback = true
+            let id = try await fallback.startSession(config: config)
+            sessionEngines[id] = .fallback
+            return id
+        }
+    }
+
+    public func attachView(sessionID: TerminalSessionID, surfaceID: String) async throws {
+        try await engine(for: sessionID).attachView(sessionID: sessionID, surfaceID: surfaceID)
+    }
+
+    public func sendInput(sessionID: TerminalSessionID, input: String) async throws {
+        try await engine(for: sessionID).sendInput(sessionID: sessionID, input: input)
+    }
+
+    public func resize(sessionID: TerminalSessionID, cols: Int, rows: Int) async throws {
+        try await engine(for: sessionID).resize(sessionID: sessionID, cols: cols, rows: rows)
+    }
+
+    public func subscribeEvents(sessionID: TerminalSessionID) async -> AsyncStream<TerminalEvent> {
+        do {
+            let selectedEngine = try engine(for: sessionID)
+            return await selectedEngine.subscribeEvents(sessionID: sessionID)
+        } catch {
+            return AsyncStream { continuation in
+                continuation.yield(.status("session-not-found"))
+                continuation.finish()
+            }
+        }
+    }
+
+    private func engine(for sessionID: TerminalSessionID) throws -> TerminalEngine {
+        guard let selection = sessionEngines[sessionID] else {
+            throw FlouiError.notFound("session \(sessionID.rawValue)")
+        }
+
+        switch selection {
+        case .primary:
+            return primary
+        case .fallback:
+            return fallback
+        }
+    }
+
+    private func shouldFallback(from error: Error) -> Bool {
+        guard let flouiError = error as? FlouiError else {
+            return false
+        }
+
+        switch flouiError {
+        case .unsupported:
+            return true
+        case let .operationFailed(message):
+            let lowercased = message.lowercased()
+            return lowercased.contains("libghostty") || lowercased.contains("ghostty")
+        default:
+            return false
+        }
+    }
+}
+
+public enum DefaultTerminalEngineFactory {
+    public static func make() -> TerminalEngine {
+        GhosttyFirstTerminalEngine()
     }
 }
 
@@ -214,6 +419,14 @@ public actor TerminalWorkspaceRuntime {
         }
 
         try await engine.sendInput(sessionID: sessionID, input: input)
+    }
+
+    public func resize(paneID: String, cols: Int, rows: Int) async throws {
+        guard let sessionID = await manager.sessionID(for: paneID) else {
+            throw FlouiError.notFound("no active terminal session for pane \(paneID)")
+        }
+
+        try await engine.resize(sessionID: sessionID, cols: cols, rows: rows)
     }
 
     public func sessionID(for paneID: String) async -> TerminalSessionID? {

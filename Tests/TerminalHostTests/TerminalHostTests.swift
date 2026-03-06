@@ -41,6 +41,7 @@ actor RecordingSurfaceBridge: TerminalSurfaceBridge {
 actor RuntimeMockTerminalEngine: TerminalEngine {
     var startedConfigs: [TerminalSessionConfig] = []
     var sentInputs: [(TerminalSessionID, String)] = []
+    var resizedSessions: [(TerminalSessionID, Int, Int)] = []
     var continuations: [TerminalSessionID: AsyncStream<TerminalEvent>.Continuation] = [:]
     var streams: [TerminalSessionID: AsyncStream<TerminalEvent>] = [:]
 
@@ -62,7 +63,9 @@ actor RuntimeMockTerminalEngine: TerminalEngine {
         sentInputs.append((sessionID, input))
     }
 
-    func resize(sessionID _: TerminalSessionID, cols _: Int, rows _: Int) async throws {}
+    func resize(sessionID: TerminalSessionID, cols: Int, rows: Int) async throws {
+        resizedSessions.append((sessionID, cols, rows))
+    }
 
     func subscribeEvents(sessionID: TerminalSessionID) async -> AsyncStream<TerminalEvent> {
         streams[sessionID] ?? AsyncStream { continuation in continuation.finish() }
@@ -73,15 +76,20 @@ actor RuntimeMockTerminalEngine: TerminalEngine {
     }
 }
 
-actor ImmediateProcessRunner: ProcessRunner {
-    let status: Int32
+actor FailingStartTerminalEngine: TerminalEngine {
+    private(set) var startCalls = 0
 
-    init(status: Int32) {
-        self.status = status
+    func startSession(config _: TerminalSessionConfig) async throws -> TerminalSessionID {
+        startCalls += 1
+        throw FlouiError.unsupported("libghostty not available")
     }
 
-    func run(_: String, _: [String], environment _: [String: String]) async throws -> Int32 {
-        status
+    func attachView(sessionID _: TerminalSessionID, surfaceID _: String) async throws {}
+    func sendInput(sessionID _: TerminalSessionID, input _: String) async throws {}
+    func resize(sessionID _: TerminalSessionID, cols _: Int, rows _: Int) async throws {}
+
+    func subscribeEvents(sessionID _: TerminalSessionID) async -> AsyncStream<TerminalEvent> {
+        AsyncStream { continuation in continuation.finish() }
     }
 }
 
@@ -174,23 +182,31 @@ func sessionManagerUnknownPane() async {
     }
 }
 
-@Test("ExternalTerminalEngine emits exit event")
-func externalEngineExitEvent() async throws {
-    let runner = ImmediateProcessRunner(status: 0)
-    let engine = ExternalTerminalEngine(runner: runner)
-
-    let sessionID = try await engine.startSession(config: TerminalSessionConfig(
+@Test("ExternalTerminalEngine supports interactive input, output and exit propagation")
+func externalEngineInteractiveFlow() async throws {
+    let runtime = TerminalWorkspaceRuntime(engine: ExternalTerminalEngine())
+    let config = TerminalSessionConfig(
         workspaceID: "w1",
         paneID: "p1",
-        shellCommand: ["/usr/bin/env", "echo", "hello"]
-    ))
+        shellCommand: ["/bin/sh", "-lc", "read line; echo ECHO:$line"]
+    )
 
-    var received: [TerminalEvent] = []
-    for await event in await engine.subscribeEvents(sessionID: sessionID) {
-        received.append(event)
+    try await runtime.activateTerminal(config: config)
+    try await runtime.resize(paneID: "p1", cols: 120, rows: 32)
+    try await runtime.sendInput(paneID: "p1", input: "hello\n")
+
+    var snapshot: TerminalPaneRuntimeState?
+    for _ in 0 ..< 40 {
+        snapshot = await runtime.snapshot(for: "p1")
+        if snapshot?.exitCode != nil {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
     }
 
-    #expect(received.contains { if case let .processExited(code) = $0 { return code == 0 } else { return false } })
+    #expect(snapshot?.outputLines.contains(where: { $0.contains("ECHO:hello") }) == true)
+    #expect(snapshot?.exitCode == 0)
+    #expect(snapshot?.isRunning == false)
 }
 
 @Test("GhosttyRuntimeBridge calls loaded runtime functions")
@@ -300,4 +316,57 @@ func terminalWorkspaceRuntimeInputForwarding() async throws {
     } catch let error as FlouiError {
         #expect(error == FlouiError.notFound("no active terminal session for pane missing"))
     }
+}
+
+@Test("TerminalWorkspaceRuntime forwards resize and errors for missing panes")
+func terminalWorkspaceRuntimeResizeForwarding() async throws {
+    let engine = RuntimeMockTerminalEngine()
+    let runtime = TerminalWorkspaceRuntime(engine: engine)
+
+    let config = TerminalSessionConfig(
+        workspaceID: "w1",
+        paneID: "term-1",
+        shellCommand: ["/bin/zsh"]
+    )
+
+    try await runtime.activateTerminal(config: config)
+    try await runtime.resize(paneID: "term-1", cols: 140, rows: 42)
+    let resized = await engine.resizedSessions
+    #expect(resized.count == 1)
+    #expect(resized.first?.1 == 140)
+    #expect(resized.first?.2 == 42)
+
+    do {
+        try await runtime.resize(paneID: "missing", cols: 80, rows: 24)
+        Issue.record("Expected missing pane to throw")
+    } catch let error as FlouiError {
+        #expect(error == FlouiError.notFound("no active terminal session for pane missing"))
+    }
+}
+
+@Test("GhosttyFirstTerminalEngine falls back to external engine when ghostty is unavailable")
+func ghosttyFirstEngineFallback() async throws {
+    let primary = FailingStartTerminalEngine()
+    let fallback = RuntimeMockTerminalEngine()
+    let engine = GhosttyFirstTerminalEngine(primary: primary, fallback: fallback)
+    let config = TerminalSessionConfig(
+        workspaceID: "w1",
+        paneID: "term-1",
+        shellCommand: ["/bin/zsh"]
+    )
+
+    let sessionID = try await engine.startSession(config: config)
+    try await engine.attachView(sessionID: sessionID, surfaceID: "surface-1")
+    try await engine.sendInput(sessionID: sessionID, input: "echo hi\n")
+    try await engine.resize(sessionID: sessionID, cols: 90, rows: 20)
+
+    let primaryStartCalls = await primary.startCalls
+    let fallbackStarts = await fallback.startedConfigs
+    let fallbackInputs = await fallback.sentInputs
+    let fallbackResizes = await fallback.resizedSessions
+    #expect(primaryStartCalls == 1)
+    #expect(fallbackStarts.count == 1)
+    #expect(fallbackInputs.first?.1 == "echo hi\n")
+    #expect(fallbackResizes.first?.1 == 90)
+    #expect(fallbackResizes.first?.2 == 20)
 }

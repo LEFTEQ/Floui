@@ -331,6 +331,22 @@ func recoveryAdvisorPermissionMapping() {
     #expect(issue.steps.contains(where: { $0.contains("System Settings") }))
 }
 
+@Test("Recovery advisor maps Apple Event timeout to actionable retry steps")
+func recoveryAdvisorTimeoutMapping() {
+    let issue = BrowserRecoveryAdvisor.advise(
+        error: BrowserOrchestrationError(
+            browser: .chrome,
+            operation: "listWindows",
+            code: -1712,
+            message: "Apple event timed out"
+        )
+    )
+
+    #expect(issue.isPermissionIssue == false)
+    #expect(issue.summary.contains("did not complete"))
+    #expect(issue.steps.contains(where: { $0.contains("responsive") }))
+}
+
 @Test("ChromiumDevToolsAdapter sends bootstrap commands")
 func chromiumAdapterBootstrap() async throws {
     let client = RecordingCDPClient()

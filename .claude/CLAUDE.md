@@ -17,7 +17,8 @@
 
 - `Sources/TerminalHost/TerminalHost.swift`
   - Terminal engine adapters and session manager.
-  - Includes `TerminalWorkspaceRuntime` and `TerminalPaneRuntimeState` for pane lifecycle, event consumption, and terminal input forwarding.
+  - Includes `TerminalWorkspaceRuntime` and `TerminalPaneRuntimeState` for pane lifecycle, event consumption, terminal input forwarding, and resize propagation.
+  - Includes `GhosttyFirstTerminalEngine` and `DefaultTerminalEngineFactory` for Ghostty-first runtime selection with external-process fallback.
 
 - `Sources/TerminalHost/GhosttyRuntimeBridge.swift`
   - Concrete Ghostty runtime integration.

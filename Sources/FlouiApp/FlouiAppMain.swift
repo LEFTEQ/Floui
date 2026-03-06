@@ -639,7 +639,7 @@ struct PillPaneView: View {
 final class TerminalRuntimeViewModel: ObservableObject {
     @Published private(set) var snapshotsByPaneID: [String: TerminalPaneRuntimeState] = [:]
 
-    private let runtime = TerminalWorkspaceRuntime(engine: ExternalTerminalEngine())
+    private let runtime = TerminalWorkspaceRuntime(engine: DefaultTerminalEngineFactory.make())
     private var activePaneIDs = Set<String>()
     private var pollTask: Task<Void, Never>?
 

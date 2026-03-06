@@ -1,6 +1,7 @@
 import BrowserOrchestrator
 import FlouiCore
 import Foundation
+import TerminalHost
 import Testing
 
 @Test("Real E2E gate: requires explicit opt-in")
@@ -60,4 +61,36 @@ func realBrowserAdapterContractOrRecovery() async throws {
             #expect(issue.title.isEmpty == false)
         }
     }
+}
+
+@Test("Real E2E contract: terminal runtime handles start/input/resize/exit")
+func realTerminalRuntimeContract() async throws {
+    let enabled = ProcessInfo.processInfo.environment["FLOUI_REAL_E2E"] == "1"
+    guard enabled else {
+        return
+    }
+
+    let runtime = TerminalWorkspaceRuntime(engine: ExternalTerminalEngine())
+    let config = TerminalSessionConfig(
+        workspaceID: "real-e2e",
+        paneID: "term-e2e",
+        shellCommand: ["/bin/sh", "-lc", "read line; echo ECHO:$line"]
+    )
+
+    try await runtime.activateTerminal(config: config)
+    try await runtime.resize(paneID: "term-e2e", cols: 120, rows: 40)
+    try await runtime.sendInput(paneID: "term-e2e", input: "real-e2e\n")
+
+    var snapshot: TerminalPaneRuntimeState?
+    for _ in 0 ..< 40 {
+        snapshot = await runtime.snapshot(for: "term-e2e")
+        if snapshot?.exitCode != nil {
+            break
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+
+    #expect(snapshot?.outputLines.contains(where: { $0.contains("ECHO:real-e2e") }) == true)
+    #expect(snapshot?.exitCode == 0)
+    #expect(snapshot?.isRunning == false)
 }

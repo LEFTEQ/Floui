@@ -50,6 +50,19 @@ public enum BrowserRecoveryAdvisor {
                 )
             }
 
+            if orchestrationError.code == -1712 {
+                return BrowserRecoveryIssue(
+                    title: "\(orchestrationError.browser.rawValue.capitalized) automation timed out",
+                    summary: "Apple Events did not complete while running \(orchestrationError.operation).",
+                    steps: [
+                        "Bring the browser to the foreground and dismiss any modal dialogs.",
+                        "Confirm Floui is allowed in System Settings > Privacy & Security > Automation.",
+                        "Retry browser orchestration after the browser is responsive.",
+                    ],
+                    isPermissionIssue: false
+                )
+            }
+
             if orchestrationError.code == -600 {
                 return BrowserRecoveryIssue(
                     title: "\(orchestrationError.browser.rawValue.capitalized) is not available",
@@ -399,11 +412,21 @@ public struct AppleEventBrowserAdapter: BrowserAdapter {
 }
 
 public struct CocoaAppleEventClient: AppleEventClient {
-    public init() {}
+    public var timeoutSeconds: Int
+
+    public init(timeoutSeconds: Int = 5) {
+        self.timeoutSeconds = timeoutSeconds
+    }
 
     public func runScript(_ script: String) async throws -> String {
         var errorInfo: NSDictionary?
-        guard let engine = NSAppleScript(source: script) else {
+        let wrappedScript = """
+        with timeout of \(timeoutSeconds) seconds
+        \(script)
+        end timeout
+        """
+
+        guard let engine = NSAppleScript(source: wrappedScript) else {
             throw BrowserAutomationError.appleScriptFailure(code: -1, message: "Unable to create NSAppleScript engine")
         }
 

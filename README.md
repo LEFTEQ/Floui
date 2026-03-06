@@ -28,6 +28,8 @@ This repository now contains a working iterative implementation of the architect
   - recovery advisor and actionable permission/browser failure guidance
 - Ghostty abstraction + concrete runtime bridge (`GhosttyRuntimeBridge`) via dynamic `libghostty` C symbols
 - Terminal workspace runtime (`TerminalWorkspaceRuntime`) with pane lifecycle tracking for terminal tabs
+  - `GhosttyFirstTerminalEngine` prefers Ghostty and falls back to external process sessions when `libghostty` is unavailable
+  - external terminal sessions now support stdin forwarding, stdout/stderr ingestion, resize status updates, and exit propagation
 - Permission onboarding + health reporting (`PermissionOnboardingController`, `PermissionHealthEvaluator`)
 - CDP ingestion stack:
   - `ChromiumDevToolsAdapter` target cache + lifecycle stream handling
@@ -44,6 +46,7 @@ This repository now contains a working iterative implementation of the architect
 
 - Tab shortcuts: `Cmd+Shift+]` for next tab, `Cmd+Shift+[` for previous tab.
 - Terminal tabs are now live runtime panes backed by `TerminalWorkspaceRuntime` (session state + input forwarding).
+- Terminal startup now prefers Ghostty automatically and falls back to external shell execution when Ghostty is unavailable.
 - Browser orchestration can be triggered from the fixed-pill rail using `Apply Layout`; failures surface recovery steps in-app.
 
 ## Project Layout
