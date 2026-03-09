@@ -53,7 +53,8 @@
 
 - `Sources/FlouiApp/GlobalTaskRunner.swift`
   - Reusable repository-discovery and quick-run orchestration for dev workflows.
-  - Includes `GlobalTaskDiscoveryService`, `GlobalTaskRunnerViewModel`, terminal-context modeling, package-script/docker/make/swift/Xcode detection, Docker Compose manifest/service discovery, and deterministic quick-run command dispatch assumptions.
+  - Includes `GlobalTaskDiscoveryService`, `GlobalTaskRunnerViewModel`, terminal-context modeling, package-script/docker/make/swift/Xcode detection, Docker Compose manifest/service discovery, deterministic runtime refresh, and deterministic quick-run command dispatch assumptions.
+  - Includes `ComposeRuntimeQuickCommandPlanner` for centralized Up/Down/Logs quick actions from runtime dashboards.
 
 - `Sources/FlouiApp/RuntimeInspector.swift`
   - Reusable runtime inspection layer for external developer tooling state.
@@ -83,6 +84,7 @@
 - UI chrome should derive counts, tone, and relative-time labels from `AppShellPresentation.swift`; avoid re-implementing workspace/pill formatting inside views.
 - Repo/task discovery should go through `GlobalTaskRunner.swift`; avoid ad-hoc filesystem parsing in SwiftUI views.
 - External runtime inspection such as Docker Compose state should go through `RuntimeInspector.swift`; avoid shelling out from SwiftUI views or mixing command parsing into presentation code.
+- Compose runtime quick actions should be composed via `ComposeRuntimeQuickCommandPlanner`; avoid hardcoding `docker compose` command selection in views.
 - Shell-aware terminal context should flow through `ShellIntegration.swift` and `TerminalIntegration.swift`; avoid parsing ad-hoc prompt text directly in views or reducers.
 - Transcript rendering/search/selection should go through `TerminalTextViews.swift`; avoid rebuilding custom transcript widgets in individual panes.
 - Terminal search matching/selection and command history traversal should go through `TerminalInteraction.swift`; avoid duplicating search-index and history-cursor logic in SwiftUI view bodies.

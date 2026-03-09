@@ -174,3 +174,43 @@ func globalTaskRunnerFiltersUnsupportedTerminalContexts() {
     #expect(snapshot.catalogs.isEmpty)
     #expect(snapshot.totalTaskCount == 0)
 }
+
+@Test("Compose runtime quick command planner prefers logs for running services")
+func composeRuntimeQuickCommandPlannerUsesRunningService() {
+    let runtime = ComposeRuntimeCatalog(
+        paneID: "term-1",
+        repositoryName: "repo",
+        repositoryRoot: "/repo",
+        services: [
+            ComposeServiceRuntime(serviceName: "db", state: .stopped),
+            ComposeServiceRuntime(serviceName: "web", state: .running),
+        ]
+    )
+
+    #expect(ComposeRuntimeQuickCommandPlanner.command(for: .composeUp, runtime: runtime) == "docker compose up -d")
+    #expect(ComposeRuntimeQuickCommandPlanner.command(for: .composeDown, runtime: runtime) == "docker compose down")
+    #expect(ComposeRuntimeQuickCommandPlanner.command(for: .followLogs, runtime: runtime) == "docker compose logs -f web")
+}
+
+@Test("Compose runtime quick command planner falls back when no service is running")
+func composeRuntimeQuickCommandPlannerFallbacksWithoutRunningService() {
+    let stoppedRuntime = ComposeRuntimeCatalog(
+        paneID: "term-1",
+        repositoryName: "repo",
+        repositoryRoot: "/repo",
+        services: [
+            ComposeServiceRuntime(serviceName: "worker", state: .stopped),
+            ComposeServiceRuntime(serviceName: "cache", state: .stopped),
+        ]
+    )
+
+    let emptyRuntime = ComposeRuntimeCatalog(
+        paneID: "term-2",
+        repositoryName: "repo",
+        repositoryRoot: "/repo",
+        services: []
+    )
+
+    #expect(ComposeRuntimeQuickCommandPlanner.command(for: .followLogs, runtime: stoppedRuntime) == "docker compose logs -f worker")
+    #expect(ComposeRuntimeQuickCommandPlanner.command(for: .followLogs, runtime: emptyRuntime) == "docker compose logs -f")
+}

@@ -49,6 +49,7 @@ This repository now contains a working iterative implementation of the architect
   - card-based workspace sidebar with per-workspace activity summaries
   - workspace cycling/focus reducer actions and tested presentation helpers for pill/workspace telemetry
   - global task runner sidebar for repo-aware package scripts, Docker Compose flows, Make targets, SwiftPM commands, and Xcode launch actions across terminal directories
+  - runtime dashboard cards for detected Docker Compose repos with Up/Down/Logs quick actions routed into the mapped terminal pane
   - Docker Compose runtime inspection in the task runner sidebar, including per-service state, health, and published ports
   - live runtime sidebar for cross-workspace shell status, active commands, cwd, and branch context
 - Shell-aware terminal context:
@@ -81,6 +82,7 @@ This repository now contains a working iterative implementation of the architect
 - The shell now highlights the focused mini-window, exposes workspace activity summaries, and keeps pill telemetry visible with progress and alert counts.
 - Terminal tabs can declare a `workingDirectory`; the sidebar task runner uses that context to discover scripts/containers and dispatch quick-run commands back into the matching shell.
 - The task runner also inspects `docker compose ps --format json` for detected repos so service health and running/stopped state stay visible beside discovered compose actions.
+- Runtime status is auto-refreshed on a loop and can be manually refreshed from the sidebar; quick actions dispatch `docker compose` commands in the correct repository terminal.
 - The live runtime rail now classifies matched repo tasks versus docker/manual commands and exposes stop/rerun actions per pane.
 - Terminal panes expose searchable selectable scrollback, copy/paste helpers, recent command chips, and interrupt/rerun actions, but this is still not a full Warp/VS Code-class terminal emulator yet.
 - Terminal command entry now supports command-history navigation with up/down keys and restores in-progress draft input when history navigation unwinds.

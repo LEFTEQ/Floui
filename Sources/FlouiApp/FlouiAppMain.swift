@@ -325,6 +325,12 @@ struct AppShellView: View {
         .task(id: taskRunnerKey) {
             globalTaskRunner.refresh(layoutState: layoutState)
         }
+        .task(id: runtimeRefreshLoopKey) {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                globalTaskRunner.refreshRuntime()
+            }
+        }
     }
 
     private var workspaceSidebar: some View {
@@ -362,9 +368,15 @@ struct AppShellView: View {
                 GlobalTaskRunnerSectionView(
                     snapshot: globalTaskRunner.snapshot,
                     composeRuntimeSnapshot: globalTaskRunner.runtimeSnapshot,
+                    isRefreshingRuntime: globalTaskRunner.isRefreshingRuntime,
+                    lastRuntimeRefreshAt: globalTaskRunner.lastRuntimeRefreshAt,
                     activeWorkspaceID: layoutState.activeWorkspaceID,
                     terminalRuntime: terminalRuntime,
-                    onRunTask: runTask
+                    onRefreshRuntime: {
+                        globalTaskRunner.refreshRuntime()
+                    },
+                    onRunTask: runTask,
+                    onRunComposeAction: runComposeAction
                 )
 
                 TerminalRuntimePanelSectionView(
@@ -565,6 +577,10 @@ struct AppShellView: View {
             .joined(separator: "\n")
     }
 
+    private var runtimeRefreshLoopKey: String {
+        taskRunnerKey
+    }
+
     private var shortcutHandlers: some View {
         VStack(spacing: 0) {
             Button("Next Tab") {
@@ -629,6 +645,19 @@ struct AppShellView: View {
     private func runTask(_ task: DeveloperTask, _ catalog: DeveloperTerminalTaskCatalog) {
         terminalRuntime.runTask(
             task.command,
+            in: catalog.context,
+            executionDirectory: catalog.executionDirectory
+        )
+    }
+
+    private func runComposeAction(
+        _ action: ComposeRuntimeQuickAction,
+        _ catalog: DeveloperTerminalTaskCatalog,
+        _ runtime: ComposeRuntimeCatalog
+    ) {
+        let command = ComposeRuntimeQuickCommandPlanner.command(for: action, runtime: runtime)
+        terminalRuntime.runTask(
+            command,
             in: catalog.context,
             executionDirectory: catalog.executionDirectory
         )
@@ -848,9 +877,13 @@ struct WorkspaceSidebarCardView: View {
 struct GlobalTaskRunnerSectionView: View {
     let snapshot: GlobalTaskRunnerSnapshot
     let composeRuntimeSnapshot: ComposeRuntimeSnapshot
+    let isRefreshingRuntime: Bool
+    let lastRuntimeRefreshAt: Date?
     let activeWorkspaceID: String?
     @ObservedObject var terminalRuntime: TerminalRuntimeViewModel
+    let onRefreshRuntime: () -> Void
     let onRunTask: (DeveloperTask, DeveloperTerminalTaskCatalog) -> Void
+    let onRunComposeAction: (ComposeRuntimeQuickAction, DeveloperTerminalTaskCatalog, ComposeRuntimeCatalog) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -858,12 +891,29 @@ struct GlobalTaskRunnerSectionView: View {
                 .overlay(Color.white.opacity(0.08))
                 .padding(.top, 2)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Global Task Runner")
-                    .font(.headline)
-                Text(snapshot.catalogs.isEmpty ? "No project terminals detected" : "Repo-aware scripts and Docker tasks across open terminals.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Global Task Runner")
+                        .font(.headline)
+                    Text(snapshot.catalogs.isEmpty ? "No project terminals detected" : "Repo-aware scripts and Docker tasks across open terminals.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if let lastRuntimeRefreshAt {
+                        Text("runtime \(RelativeActivityFormatter.describe(since: lastRuntimeRefreshAt, now: Date()))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                Button(isRefreshingRuntime ? "Refreshing..." : "Refresh") {
+                    onRefreshRuntime()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isRefreshingRuntime)
             }
 
             if snapshot.catalogs.isEmpty {
@@ -888,6 +938,29 @@ struct GlobalTaskRunnerSectionView: View {
                     ShellStatBadge(value: snapshot.totalTaskCount, label: "tasks", tone: .idle)
                 }
 
+                if !runtimeEntries.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Runtime Dashboard")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                        HStack(spacing: 8) {
+                            ShellStatBadge(value: runtimeRunningRepoCount, label: "repos live", tone: .active)
+                            ShellStatBadge(value: runtimeRunningServiceCount, label: "services", tone: .active)
+                            ShellStatBadge(value: runtimeIssueCount, label: "issues", tone: runtimeIssueCount > 0 ? .warning : .idle)
+                        }
+
+                        ForEach(Array(runtimeEntries.prefix(4))) { entry in
+                            ComposeRuntimeDashboardCardView(
+                                entry: entry,
+                                onAction: { action in
+                                    onRunComposeAction(action, entry.catalog, entry.runtime)
+                                }
+                            )
+                        }
+                    }
+                }
+
                 ForEach(snapshot.catalogs) { catalog in
                     TerminalTaskCatalogCardView(
                         catalog: catalog,
@@ -903,6 +976,119 @@ struct GlobalTaskRunnerSectionView: View {
             }
         }
         .padding(.top, 4)
+    }
+
+    private var runtimeEntries: [ComposeRuntimeDashboardEntry] {
+        composeRuntimeSnapshot.catalogs
+            .compactMap { runtime in
+                guard let catalog = snapshot.catalogs.first(where: { $0.context.paneID == runtime.paneID }) else {
+                    return nil
+                }
+
+                return ComposeRuntimeDashboardEntry(catalog: catalog, runtime: runtime)
+            }
+            .sorted { lhs, rhs in
+                if lhs.runtime.runningServiceCount != rhs.runtime.runningServiceCount {
+                    return lhs.runtime.runningServiceCount > rhs.runtime.runningServiceCount
+                }
+
+                return lhs.catalog.repositoryName.localizedCaseInsensitiveCompare(rhs.catalog.repositoryName) == .orderedAscending
+            }
+    }
+
+    private var runtimeRunningServiceCount: Int {
+        runtimeEntries.reduce(into: 0) { result, entry in
+            result += entry.runtime.runningServiceCount
+        }
+    }
+
+    private var runtimeRunningRepoCount: Int {
+        runtimeEntries.filter { $0.runtime.runningServiceCount > 0 }.count
+    }
+
+    private var runtimeIssueCount: Int {
+        runtimeEntries.filter { entry in
+            if let error = entry.runtime.lastError, !error.isEmpty {
+                return true
+            }
+            return false
+        }.count
+    }
+}
+
+struct ComposeRuntimeDashboardEntry: Identifiable {
+    let catalog: DeveloperTerminalTaskCatalog
+    let runtime: ComposeRuntimeCatalog
+
+    var id: String {
+        runtime.id
+    }
+}
+
+struct ComposeRuntimeDashboardCardView: View {
+    let entry: ComposeRuntimeDashboardEntry
+    let onAction: (ComposeRuntimeQuickAction) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(entry.catalog.repositoryName)
+                        .font(.caption.weight(.semibold))
+                    Text(entry.runtime.statusSummary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(entry.runtime.runningServiceCount > 0 ? "live" : "idle")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(entry.runtime.runningServiceCount > 0 ? Color.green : .secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background((entry.runtime.runningServiceCount > 0 ? Color.green : Color.white).opacity(0.14))
+                    .clipShape(Capsule())
+            }
+
+            if let error = entry.runtime.lastError, !error.isEmpty {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            } else if !entry.runtime.services.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(entry.runtime.services) { service in
+                            ComposeServiceBadgeView(service: service)
+                        }
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button("Up") {
+                    onAction(.composeUp)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Down") {
+                    onAction(.composeDown)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Logs") {
+                    onAction(.followLogs)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 

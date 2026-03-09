@@ -134,6 +134,38 @@ struct GlobalTaskRunnerSnapshot: Equatable, Sendable {
     }
 }
 
+enum ComposeRuntimeQuickAction: String, Equatable, Sendable {
+    case composeUp
+    case composeDown
+    case followLogs
+}
+
+enum ComposeRuntimeQuickCommandPlanner {
+    static func command(for action: ComposeRuntimeQuickAction, runtime: ComposeRuntimeCatalog) -> String {
+        switch action {
+        case .composeUp:
+            return "docker compose up -d"
+
+        case .composeDown:
+            return "docker compose down"
+
+        case .followLogs:
+            if let service = preferredLogsService(runtime: runtime) {
+                return "docker compose logs -f \(service)"
+            }
+            return "docker compose logs -f"
+        }
+    }
+
+    private static func preferredLogsService(runtime: ComposeRuntimeCatalog) -> String? {
+        if let runningService = runtime.services.first(where: { $0.state == .running })?.serviceName {
+            return runningService
+        }
+
+        return runtime.services.first?.serviceName
+    }
+}
+
 struct GlobalTaskDiscoveryService: Sendable {
     private let fileSystem: any DeveloperWorkspaceFileSystem
 
@@ -608,10 +640,13 @@ struct GlobalTaskDiscoveryService: Sendable {
 final class GlobalTaskRunnerViewModel: ObservableObject {
     @Published private(set) var snapshot = GlobalTaskRunnerSnapshot.empty
     @Published private(set) var runtimeSnapshot = ComposeRuntimeSnapshot.empty
+    @Published private(set) var isRefreshingRuntime = false
+    @Published private(set) var lastRuntimeRefreshAt: Date?
 
     private let discovery: GlobalTaskDiscoveryService
     private let runtimeInspector: ComposeRuntimeInspectionService
     private var refreshTask: Task<Void, Never>?
+    private var runtimeRefreshTask: Task<Void, Never>?
 
     init(
         discovery: GlobalTaskDiscoveryService = .init(),
@@ -623,12 +658,14 @@ final class GlobalTaskRunnerViewModel: ObservableObject {
 
     deinit {
         refreshTask?.cancel()
+        runtimeRefreshTask?.cancel()
     }
 
     func refresh(layoutState: WorkspaceLayoutState) {
         refreshTask?.cancel()
         let discovery = self.discovery
         let runtimeInspector = self.runtimeInspector
+        isRefreshingRuntime = true
         refreshTask = Task {
             let snapshot = await Task.detached(priority: .utility) {
                 discovery.snapshot(from: layoutState)
@@ -643,6 +680,35 @@ final class GlobalTaskRunnerViewModel: ObservableObject {
 
             self.snapshot = snapshot
             self.runtimeSnapshot = runtimeSnapshot
+            self.lastRuntimeRefreshAt = snapshot.catalogs.isEmpty ? nil : Date()
+            self.isRefreshingRuntime = false
+        }
+    }
+
+    func refreshRuntime() {
+        runtimeRefreshTask?.cancel()
+        let catalogs = snapshot.catalogs
+        guard !catalogs.isEmpty else {
+            runtimeSnapshot = .empty
+            lastRuntimeRefreshAt = nil
+            isRefreshingRuntime = false
+            return
+        }
+
+        let runtimeInspector = self.runtimeInspector
+        isRefreshingRuntime = true
+        runtimeRefreshTask = Task {
+            let runtimeSnapshot = await Task.detached(priority: .utility) {
+                await runtimeInspector.inspect(catalogs: catalogs)
+            }.value
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            self.runtimeSnapshot = runtimeSnapshot
+            self.lastRuntimeRefreshAt = Date()
+            self.isRefreshingRuntime = false
         }
     }
 }
