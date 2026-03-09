@@ -58,6 +58,8 @@ This repository now contains a working iterative implementation of the architect
   - searchable AppKit-backed scrollback view with text selection and copy support
   - larger scrollback retention (5,000 lines per pane)
   - pane chrome for find/copy/paste plus recent-command rerun and interrupt controls
+  - highlighted match navigation (`Prev`/`Next`) with match counters and transcript focus actions (`Select All`, `Live`, `Clear`)
+  - history-aware command input (`up/down` cycle with draft restoration) for shell-like command recall in terminal panes
 - `floui-cli` wrapper that emits structured `task.started/task.done` JSON events
 - Local `xcodebuild` test scripts aligned to TDD flow
 - Release hardening scaffolding:
@@ -81,6 +83,7 @@ This repository now contains a working iterative implementation of the architect
 - The task runner also inspects `docker compose ps --format json` for detected repos so service health and running/stopped state stay visible beside discovered compose actions.
 - The live runtime rail now classifies matched repo tasks versus docker/manual commands and exposes stop/rerun actions per pane.
 - Terminal panes expose searchable selectable scrollback, copy/paste helpers, recent command chips, and interrupt/rerun actions, but this is still not a full Warp/VS Code-class terminal emulator yet.
+- Terminal command entry now supports command-history navigation with up/down keys and restores in-progress draft input when history navigation unwinds.
 
 ## Project Layout
 

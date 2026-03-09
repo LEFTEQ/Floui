@@ -453,6 +453,16 @@ public actor TerminalWorkspaceRuntime {
         statesByPaneID[paneID]
     }
 
+    public func clearOutput(paneID: String) {
+        guard var state = statesByPaneID[paneID] else {
+            return
+        }
+
+        state.outputLines = []
+        state.lastMessage = "Scrollback cleared"
+        statesByPaneID[paneID] = state
+    }
+
     private func startEventPump(paneID: String, sessionID: TerminalSessionID) {
         eventTasks[paneID]?.cancel()
         eventTasks[paneID] = Task {

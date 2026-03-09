@@ -40,6 +40,12 @@
 - `Sources/FlouiApp/TerminalTextViews.swift`
   - Shared AppKit-backed transcript surface.
   - Includes `SelectableTerminalTranscriptView` for searchable, selectable, copy-friendly scrollback inside SwiftUI terminal panes.
+  - Includes `HistoryAwareTerminalInputField` + `TerminalCommandTextField` for command-history aware terminal input (`up/down`) with native AppKit command handling.
+
+- `Sources/FlouiApp/TerminalInteraction.swift`
+  - Shared terminal interaction logic and control hooks.
+  - Includes `TerminalTranscriptSearchNavigator` for deterministic transcript search matching/selection cycling and `TerminalCommandHistoryState` for input draft/history traversal semantics.
+  - Includes `TerminalTranscriptController` for transcript copy/select/scroll/focus actions without embedding AppKit references in view reducers.
 
 - `Sources/FlouiApp/FlouiAppMain.swift`
   - App shell runtime wiring.
@@ -79,4 +85,5 @@
 - External runtime inspection such as Docker Compose state should go through `RuntimeInspector.swift`; avoid shelling out from SwiftUI views or mixing command parsing into presentation code.
 - Shell-aware terminal context should flow through `ShellIntegration.swift` and `TerminalIntegration.swift`; avoid parsing ad-hoc prompt text directly in views or reducers.
 - Transcript rendering/search/selection should go through `TerminalTextViews.swift`; avoid rebuilding custom transcript widgets in individual panes.
+- Terminal search matching/selection and command history traversal should go through `TerminalInteraction.swift`; avoid duplicating search-index and history-cursor logic in SwiftUI view bodies.
 - Runtime control actions should route through `TerminalRuntimeViewModel`; avoid sending raw terminal control sequences directly from SwiftUI views.

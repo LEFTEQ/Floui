@@ -11,6 +11,7 @@ actor AppMockTerminalEngine: TerminalEngine {
     private(set) var sentInputs: [(TerminalSessionID, String)] = []
     private var streams: [TerminalSessionID: AsyncStream<TerminalEvent>] = [:]
     private var continuations: [TerminalSessionID: AsyncStream<TerminalEvent>.Continuation] = [:]
+    private var pendingEvents: [TerminalSessionID: [TerminalEvent]] = [:]
 
     func startSession(config: TerminalSessionConfig) async throws -> TerminalSessionID {
         startedConfigs.append(config)
@@ -18,6 +19,11 @@ actor AppMockTerminalEngine: TerminalEngine {
         startedSessionIDs.append(sessionID)
         streams[sessionID] = AsyncStream { continuation in
             continuations[sessionID] = continuation
+            if let bufferedEvents = pendingEvents.removeValue(forKey: sessionID) {
+                for event in bufferedEvents {
+                    continuation.yield(event)
+                }
+            }
         }
         return sessionID
     }
@@ -38,7 +44,16 @@ actor AppMockTerminalEngine: TerminalEngine {
     }
 
     func emit(sessionID: TerminalSessionID, event: TerminalEvent) {
-        continuations[sessionID]?.yield(event)
+        if let continuation = continuations[sessionID] {
+            continuation.yield(event)
+            return
+        }
+
+        pendingEvents[sessionID, default: []].append(event)
+    }
+
+    func hasSubscriber(sessionID: TerminalSessionID) -> Bool {
+        continuations[sessionID] != nil
     }
 }
 
@@ -116,7 +131,7 @@ func restoredTerminalsRequireExplicitStart() async throws {
     runtime.prepare(workspace: workspace)
     runtime.activate(tab: tab, workspaceID: "w1", surfaceID: "surface-1")
 
-    try await Task.sleep(nanoseconds: 75_000_000)
+    try await Task.sleep(nanoseconds: 425_000_000)
 
     let startedBeforeManualStart = await engine.startedConfigs
     #expect(startedBeforeManualStart.isEmpty)
@@ -126,7 +141,7 @@ func restoredTerminalsRequireExplicitStart() async throws {
 
     runtime.start(tab: tab, workspaceID: "w1", surfaceID: "surface-1")
 
-    try await Task.sleep(nanoseconds: 75_000_000)
+    try await Task.sleep(nanoseconds: 200_000_000)
 
     let startedAfterManualStart = await engine.startedConfigs
     let attachedSurfaces = await engine.attachedSurfaces
@@ -152,7 +167,7 @@ func terminalRuntimeSupportsInterruptAndRerun() async throws {
     )
 
     runtime.start(tab: tab, workspaceID: "w1", surfaceID: "surface-1")
-    try await Task.sleep(nanoseconds: 75_000_000)
+    try await Task.sleep(nanoseconds: 425_000_000)
 
     let started = await engine.startedConfigs
     let sessionID = try #require(await engine.startedSessionIDs.first)
@@ -174,4 +189,49 @@ func terminalRuntimeSupportsInterruptAndRerun() async throws {
     #expect(inputs.contains("\u{3}"))
     #expect(inputs.contains("pnpm run dev\n"))
     #expect(runtime.snapshotsByPaneID["term-1"]?.recentCommands.first == "pnpm run dev")
+}
+
+@MainActor
+@Test("Terminal runtime can clear transcript output without losing recent command history")
+func terminalRuntimeClearsTranscriptOutput() async throws {
+    let engine = AppMockTerminalEngine()
+    let runtime = TerminalRuntimeViewModel(engine: engine)
+    let tab = WorkspaceTabManifest(
+        id: "term-1",
+        title: "Terminal",
+        type: .terminal,
+        command: ["/bin/zsh"],
+        workingDirectory: "/repo"
+    )
+
+    runtime.start(tab: tab, workspaceID: "w1", surfaceID: "surface-1")
+    try await Task.sleep(nanoseconds: 200_000_000)
+
+    let sessionID = try #require(await engine.startedSessionIDs.first)
+    for _ in 0..<20 {
+        if await engine.hasSubscriber(sessionID: sessionID) {
+            break
+        }
+        try await Task.sleep(nanoseconds: 25_000_000)
+    }
+    #expect(await engine.hasSubscriber(sessionID: sessionID))
+    await engine.emit(
+        sessionID: sessionID,
+        event: .output("__FLOUI__RUN\tpnpm run dev\nbooting\nready\n__FLOUI__IDLE\n")
+    )
+
+    try await Task.sleep(nanoseconds: 425_000_000)
+
+    #expect(runtime.snapshotsByPaneID["term-1"] != nil)
+    #expect(runtime.snapshotsByPaneID["term-1"]?.isRunning == true)
+    #expect(runtime.snapshotsByPaneID["term-1"]?.outputLines == ["booting", "ready"])
+    #expect(runtime.snapshotsByPaneID["term-1"]?.recentCommands.first == "pnpm run dev")
+
+    runtime.clearTranscript(paneID: "term-1")
+
+    try await Task.sleep(nanoseconds: 425_000_000)
+
+    #expect(runtime.snapshotsByPaneID["term-1"]?.outputLines.isEmpty == true)
+    #expect(runtime.snapshotsByPaneID["term-1"]?.recentCommands.first == "pnpm run dev")
+    #expect(runtime.snapshotsByPaneID["term-1"]?.lastMessage == "Scrollback cleared")
 }

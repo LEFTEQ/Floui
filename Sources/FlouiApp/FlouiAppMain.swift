@@ -1535,6 +1535,9 @@ struct MiniWindowCard: View {
                             },
                             onRunRecentCommand: { command in
                                 terminalRuntime.runCommand(command, paneID: tab.id)
+                            },
+                            onClearTranscript: {
+                                terminalRuntime.clearTranscript(paneID: tab.id)
                             }
                         )
 
@@ -1586,7 +1589,6 @@ struct MiniWindowCard: View {
 struct TerminalPaneView: View {
     private enum FocusField: Hashable {
         case transcriptSearch
-        case commandInput
     }
 
     let tab: WorkspaceTabManifest
@@ -1601,8 +1603,13 @@ struct TerminalPaneView: View {
     let onInterrupt: () -> Void
     let onRerunRecentCommand: () -> Void
     let onRunRecentCommand: (String) -> Void
+    let onClearTranscript: () -> Void
     @State private var transcriptSearch = ""
+    @State private var selectedTranscriptMatchIndex: Int?
+    @State private var commandHistoryState = TerminalCommandHistoryState()
+    @State private var inputFocusToken = 0
     @FocusState private var focusedField: FocusField?
+    @StateObject private var transcriptController = TerminalTranscriptController()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1668,14 +1675,59 @@ struct TerminalPaneView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
                     .focused($focusedField, equals: .transcriptSearch)
+                    .onChange(of: transcriptSearch) { _, _ in
+                        selectedTranscriptMatchIndex = normalizedSelectedTranscriptMatchIndex
+                    }
+
+                if searchMatchCount > 0 {
+                    Text("\((normalizedSelectedTranscriptMatchIndex ?? 0) + 1)/\(searchMatchCount)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+
+                if searchMatchCount > 1 {
+                    Button("Prev") {
+                        selectedTranscriptMatchIndex = TerminalTranscriptSearchNavigator.previousSelection(
+                            before: normalizedSelectedTranscriptMatchIndex,
+                            matchCount: searchMatchCount
+                        )
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Next") {
+                        selectedTranscriptMatchIndex = TerminalTranscriptSearchNavigator.nextSelection(
+                            after: normalizedSelectedTranscriptMatchIndex,
+                            matchCount: searchMatchCount
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Button("Select All") {
+                    transcriptController.focusTranscript()
+                    transcriptController.selectAll()
+                }
+                .buttonStyle(.bordered)
 
                 Button("Copy") {
-                    copyTranscript()
+                    transcriptController.focusTranscript()
+                    transcriptController.copySelection()
                 }
                 .buttonStyle(.bordered)
 
                 Button("Paste") {
                     pasteClipboardIntoInput()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Live") {
+                    transcriptController.focusTranscript()
+                    transcriptController.scrollToBottom()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Clear") {
+                    onClearTranscript()
                 }
                 .buttonStyle(.bordered)
 
@@ -1696,7 +1748,9 @@ struct TerminalPaneView: View {
 
             SelectableTerminalTranscriptView(
                 transcript: transcriptText,
-                searchQuery: transcriptSearch
+                searchQuery: transcriptSearch,
+                selectedMatchIndex: normalizedSelectedTranscriptMatchIndex,
+                controller: transcriptController
             )
             .frame(height: 190)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.42)))
@@ -1706,6 +1760,7 @@ struct TerminalPaneView: View {
                     HStack(spacing: 6) {
                         ForEach(Array(recentCommands.prefix(5)), id: \.self) { command in
                             Button {
+                                commandHistoryState.reset()
                                 onRunRecentCommand(command)
                             } label: {
                                 Text(command)
@@ -1722,26 +1777,41 @@ struct TerminalPaneView: View {
                 }
             }
 
-            TextField(inputPlaceholder, text: $inputText)
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-                .focused($focusedField, equals: .commandInput)
-                .disabled(snapshot?.isRunning != true)
-                .onSubmit {
-                    let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else {
-                        return
-                    }
-                    onSubmitInput(trimmed)
-                    inputText = ""
+            HistoryAwareTerminalInputField(
+                text: $inputText,
+                placeholder: inputPlaceholder,
+                isEnabled: snapshot?.isRunning == true,
+                focusToken: inputFocusToken,
+                onSubmit: submitCurrentInput,
+                onMoveBackward: {
+                    inputText = commandHistoryState.moveBackward(
+                        currentInput: inputText,
+                        recentCommands: snapshot?.recentCommands ?? []
+                    )
+                },
+                onMoveForward: {
+                    inputText = commandHistoryState.moveForward(
+                        currentInput: inputText,
+                        recentCommands: snapshot?.recentCommands ?? []
+                    )
                 }
+            )
+                .disabled(snapshot?.isRunning != true)
         }
         .onAppear(perform: onAppear)
+        .onChange(of: tab.id) { _, _ in
+            commandHistoryState.reset()
+            selectedTranscriptMatchIndex = nil
+            transcriptSearch = ""
+        }
+        .onChange(of: transcriptText) { _, _ in
+            selectedTranscriptMatchIndex = normalizedSelectedTranscriptMatchIndex
+        }
         .onExitCommand {
             if !transcriptSearch.isEmpty {
                 transcriptSearch = ""
             }
-            focusedField = .commandInput
+            inputFocusToken += 1
         }
     }
 
@@ -1756,9 +1826,19 @@ struct TerminalPaneView: View {
         return lines.joined(separator: "\n")
     }
 
-    private func copyTranscript() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(transcriptText, forType: .string)
+    private var searchMatchCount: Int {
+        transcriptMatchRanges.count
+    }
+
+    private var transcriptMatchRanges: [NSRange] {
+        TerminalTranscriptSearchNavigator.matchRanges(in: transcriptText, query: transcriptSearch)
+    }
+
+    private var normalizedSelectedTranscriptMatchIndex: Int? {
+        TerminalTranscriptSearchNavigator.normalizedSelection(
+            current: selectedTranscriptMatchIndex,
+            matchCount: searchMatchCount
+        )
     }
 
     private func pasteClipboardIntoInput() {
@@ -1772,7 +1852,17 @@ struct TerminalPaneView: View {
             inputText += value
         }
 
-        focusedField = .commandInput
+        inputFocusToken += 1
+    }
+
+    private func submitCurrentInput() {
+        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        commandHistoryState.reset()
+        onSubmitInput(trimmed)
+        inputText = ""
     }
 
     private var startButtonTitle: String {
@@ -1978,6 +2068,21 @@ final class TerminalRuntimeViewModel: ObservableObject, TerminalWorkspaceCoordin
 
         Task { [weak self] in
             await self?.dispatchCommand(trimmed, to: paneID, appendNewline: true)
+        }
+    }
+
+    func clearTranscript(paneID: String) {
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            await self.runtime.clearOutput(paneID: paneID)
+            if let snapshot = await self.runtime.snapshot(for: paneID) {
+                await MainActor.run {
+                    self.snapshotsByPaneID[paneID] = snapshot
+                }
+            }
         }
     }
 
